@@ -19,6 +19,13 @@ def test_manifest_shape():
     assert m["squares"] == ["N40W125", "N40W130"]
     assert m["tiles"] == "tiles/2026092700"
     assert m["attribution"] == ATTRIBUTION
+    assert m["complete"] is True
+
+
+def test_a_partial_build_says_so():
+    run = dt.datetime(2026, 9, 27, 0, tzinfo=UTC)
+    m = json.loads(build_manifest(run, run, [1], ["N40W125"], 0, complete=False))
+    assert m["complete"] is False
 
 
 def test_squares_are_sorted_and_unique():

@@ -49,7 +49,7 @@ def _fake_deps(tmp_path, world_value=lambda step, field: 0, prev_manifest=None):
 
 
 def test_early_exit_when_the_site_already_has_this_run(tmp_path, capsys):
-    deps, calls = _fake_deps(tmp_path, prev_manifest={"run": "2026-09-27T00Z"})
+    deps, calls = _fake_deps(tmp_path, prev_manifest={"run": "2026-09-27T00Z", "complete": True})
     rc = run_build.build(site=tmp_path / "site", state=tmp_path / "state", work=tmp_path / "work",
                          deps=deps, pages_base="https://x", steps=None, squares=None)
     assert rc == run_build.NOTHING_TO_DO
@@ -142,3 +142,19 @@ def test_a_full_build_keeps_only_land_adjacent_squares(tmp_path):
     m = json.loads((tmp_path / "site" / "manifest.json").read_text())
     assert len(m["squares"]) == 9 and "N40W125" in m["squares"] and "S10E100" not in m["squares"]
     assert any(u.endswith("_FR_LAND.grib2.bz2") for u in calls["downloads"])
+
+
+def test_a_partial_live_manifest_does_not_stop_the_full_build(tmp_path):
+    deps, calls = _fake_deps(tmp_path, prev_manifest={"run": "2026-09-27T00Z", "complete": False})
+    rc = run_build.build(site=tmp_path / "site", state=tmp_path / "state", work=tmp_path / "work",
+                         deps=deps, pages_base="https://x", steps=[0], squares=["N00E000"])
+    assert rc == run_build.BUILT
+    m = json.loads((tmp_path / "site" / "manifest.json").read_text())
+    assert m["complete"] is False                      # a test build never claims to be whole
+
+
+def test_a_full_build_marks_the_manifest_complete(tmp_path):
+    deps, _ = _fake_deps(tmp_path)
+    run_build.build(site=tmp_path / "site", state=tmp_path / "state", work=tmp_path / "work",
+                    deps=deps, pages_base=None, steps=None, squares=None)
+    assert json.loads((tmp_path / "site" / "manifest.json").read_text())["complete"] is True

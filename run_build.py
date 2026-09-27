@@ -7,6 +7,7 @@
 import argparse
 import concurrent.futures as cf
 import datetime as dt
+import json
 import os
 import subprocess
 import sys
@@ -54,13 +55,15 @@ REAL = Deps(listing=lambda hh, field: _http_text(dwd.listing_url(hh, field)),
             now=lambda: dt.datetime.now(dt.timezone.utc))
 
 
-def live_run(deps, pages_base):
-    """The run the live site carries, as its iso string, or None."""
+def live_complete_run(deps, pages_base):
+    """The run the live site carries COMPLETELY, as its iso string, or None.
+    A test build (some steps, some squares) publishes the same run id with
+    complete=false and must not stop the next tick from building it whole."""
     if not pages_base:
         return None
     try:
-        import json
-        return json.loads(deps.fetch_text(pages_base.rstrip("/") + "/manifest.json")).get("run")
+        m = json.loads(deps.fetch_text(pages_base.rstrip("/") + "/manifest.json"))
+        return m.get("run") if m.get("complete") else None
     except Exception:
         return None
 
@@ -70,7 +73,8 @@ def build(site, state, work, deps, pages_base, steps=None, squares=None, workers
     if run is None:
         print("no complete run on DWD yet")
         return NOTHING_TO_DO
-    if steps is None and live_run(deps, pages_base) == dwd.run_iso(run):
+    full = steps is None and squares is None
+    if full and live_complete_run(deps, pages_base) == dwd.run_iso(run):
         print(f"run {dwd.run_iso(run)} already published — nothing to do")
         return NOTHING_TO_DO
     steps = list(steps) if steps is not None else dwd.STEPS
@@ -132,7 +136,7 @@ def build(site, state, work, deps, pages_base, steps=None, squares=None, workers
         lat, lon = parse_name(name)
         cube = np.stack([slice_square(arr, lat, lon) for _, arr in stacks])
         (tiles / f"{name}.icl").write_bytes(encode_square(lat, lon, hours, cube))
-    (site / "manifest.json").write_text(site_manifest(run, deps.now(), hours, names, len(past)))
+    (site / "manifest.json").write_text(site_manifest(run, deps.now(), hours, names, len(past), full))
 
     # The run's hours 0-5, for the next build's history — only when they were built.
     head_steps = [s for s in range(history.HEAD_STEPS) if s in steps]
@@ -148,8 +152,8 @@ def site_tiles(run):
     return site.tiles_path(run)
 
 
-def site_manifest(run, built, hours, names, history_steps):
-    return site.build_manifest(run, built, hours, names, history_steps)
+def site_manifest(run, built, hours, names, history_steps, complete):
+    return site.build_manifest(run, built, hours, names, history_steps, complete)
 
 
 def main():

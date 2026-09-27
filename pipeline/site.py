@@ -14,9 +14,13 @@ def tiles_path(run):
     return f"tiles/{run_id(run)}"
 
 
-def build_manifest(run, built, step_hours, squares, history_hours):
+def build_manifest(run, built, step_hours, squares, history_hours, complete=True):
     out = {
         "run": run_iso(run),
+        # False for a test build (some steps, some squares). Only a complete
+        # live manifest lets the next tick skip the run: the smoke pipeline
+        # once froze a half-uploaded cycle for six hours on an id match.
+        "complete": bool(complete),
         "runMs": int(run.timestamp() * 1000),
         "builtMs": int(built.timestamp() * 1000),
         "deg": DEG, "square": SQUARE_DEG, "side": SIDE,

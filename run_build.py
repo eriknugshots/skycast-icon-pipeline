@@ -18,7 +18,7 @@ import numpy as np
 from pipeline import dwd, history, site
 from pipeline.encode import encode_square, FIELD_COUNT
 from pipeline.regrid import ensure_kit, regrid
-from pipeline.squares import all_squares, parse_name, slice_square, NX, NY
+from pipeline.squares import all_squares, land_squares, parse_name, slice_square, NX, NY
 
 BUILT, NOTHING_TO_DO, FAILED = 0, 3, 1
 ROOT = Path(__file__).resolve().parent
@@ -74,10 +74,25 @@ def build(site, state, work, deps, pages_base, steps=None, squares=None, workers
         print(f"run {dwd.run_iso(run)} already published — nothing to do")
         return NOTHING_TO_DO
     steps = list(steps) if steps is not None else dwd.STEPS
-    names = list(squares) if squares is not None else all_squares()
     site, state, work = Path(site), Path(state), Path(work)
     work.mkdir(parents=True, exist_ok=True)
     kit = deps.ensure_kit(work)
+    if squares is not None:
+        names = list(squares)
+    else:
+        # Land-adjacent squares only (squares.land_squares): the whole world
+        # measured ~0.6-1 GB against Pages' 1 GB, and open ocean is in no
+        # one's window. FR_LAND is DWD's invariant land fraction, 0-1.
+        try:
+            dst = work / "FR_LAND.grib2.bz2"
+            deps.download(dwd.fr_land_url(run), dst)
+            frac = deps.regrid(dst, kit, work, scale=100).astype(np.float32) / 100.0
+            dst.unlink(missing_ok=True)
+        except Exception as e:
+            print(f"::error::FR_LAND failed: {e}")
+            return FAILED
+        names = land_squares(frac)
+        print(f"{len(names)} of {len(all_squares())} squares touch land or a neighbour that does")
     print(f"building run {dwd.run_iso(run)}: {len(steps)} steps × {FIELD_COUNT} fields, {len(names)} squares")
 
     # One world array per (step, field). ~4 MB each as uint8: 93 × 4 = 1.5 GB
@@ -89,7 +104,7 @@ def build(site, state, work, deps, pages_base, steps=None, squares=None, workers
         dst = work / dwd.file_name(run, step, field)
         deps.download(url, dst)
         try:
-            return step, field, deps.regrid(dst, kit, work)
+            return step, field, deps.regrid(dst, kit, work, scale=1.0)
         finally:
             dst.unlink(missing_ok=True)
 

@@ -48,8 +48,9 @@ def unpack_bz2(src, dst):
             g.write(chunk)
 
 
-def world_from_netcdf(path):
-    """The one data field of a remapped file as uint8 percent [NY][NX]; masked → MISSING."""
+def world_from_netcdf(path, scale=1.0):
+    """The one data field of a remapped file as uint8 percent [NY][NX]; masked → MISSING.
+    `scale` multiplies before rounding: FR_LAND is a 0-1 fraction, so 100."""
     with _NC_LOCK:
         ds = netCDF4.Dataset(path)
         try:
@@ -63,12 +64,12 @@ def world_from_netcdf(path):
             data = np.ma.filled(np.ma.masked_invalid(arr), -1.0).astype(np.float32)
         finally:
             ds.close()
-    out = np.rint(np.clip(data, 0, 100)).astype(np.uint8)
+    out = np.rint(np.clip(data * scale, 0, 100)).astype(np.uint8)
     out[data < 0] = MISSING
     return out
 
 
-def regrid(grib_bz2, kit, work, run=subprocess.run):
+def regrid(grib_bz2, kit, work, run=subprocess.run, scale=1.0):
     """One DWD .grib2.bz2 → uint8 world array. `run` is injected for tests."""
     work = Path(work)
     grib = work / Path(grib_bz2).name.replace(".bz2", "")
@@ -76,7 +77,7 @@ def regrid(grib_bz2, kit, work, run=subprocess.run):
     unpack_bz2(grib_bz2, grib)
     try:
         run(remap_command(kit, grib, nc), check=True)
-        return world_from_netcdf(nc)
+        return world_from_netcdf(nc, scale)
     finally:
         grib.unlink(missing_ok=True)
         nc.unlink(missing_ok=True)

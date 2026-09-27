@@ -58,3 +58,31 @@ def slice_square(world, sw_lat, sw_lon):
     rows = row_indices(sw_lat)
     cols = col_indices(sw_lon)
     return np.ascontiguousarray(world[:, rows[0]:rows[-1] + 1][:, :, cols])
+
+
+LAND_MIN_FRACTION = 0.05
+
+
+def land_squares(land_fraction):
+    """Squares with land in them or in the eight around them. land_fraction: [NY][NX] 0-1.
+
+    The app's window reaches 375 km from the viewer, so a square with no land
+    of its own still matters when a neighbour has some; open ocean two
+    squares from any coast is never in anyone's window and is the bulk of
+    the globe. Measured 2026-09-27: the whole world would be ~0.6-1 GB."""
+    land = set()
+    for name in all_squares():
+        lat, lon = parse_name(name)
+        rows = row_indices(lat)
+        block = land_fraction[rows[0]:rows[-1] + 1][:, col_indices(lon)]
+        if (block >= LAND_MIN_FRACTION).any():
+            land.add((lat, lon))
+    keep = set()
+    for lat, lon in land:
+        for dlat in (-SQUARE_DEG, 0, SQUARE_DEG):
+            for dlon in (-SQUARE_DEG, 0, SQUARE_DEG):
+                la = lat + dlat
+                lo = ((lon + dlon + 180) % 360) - 180
+                if -90 <= la <= 85:
+                    keep.add(square_name(la, lo))
+    return sorted(keep)

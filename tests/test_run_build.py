@@ -32,8 +32,13 @@ def _fake_deps(tmp_path, world_value=lambda step, field: 0, prev_manifest=None):
         calls["downloads"].append(url)
         Path(dst).write_bytes(b"fake")
 
-    def regrid(grib_bz2, kit, work):
+    def regrid(grib_bz2, kit, work, scale=1.0):
         name = Path(grib_bz2).name
+        if name.startswith("FR_LAND"):
+            # Land only inside N40W125 (a 0-1 fraction, scaled to percent by the caller).
+            frac = np.zeros((NY, NX), dtype=np.uint8)
+            frac[1050, 450] = 100
+            return frac
         step = int(name.split("_")[-2]); field = name.split("_")[-1].split(".")[0]
         calls["regrids"].append((step, field))
         return np.full((NY, NX), world_value(step, field), dtype=np.uint8)
@@ -127,3 +132,13 @@ def test_download_retries_a_short_body_then_raises(tmp_path):
     import pytest
     with pytest.raises(OSError, match="truncated"):
         run_build._download("u", tmp_path / "g", urlopen=lambda url, timeout: _Resp(b"12", 10))
+
+
+def test_a_full_build_keeps_only_land_adjacent_squares(tmp_path):
+    deps, calls = _fake_deps(tmp_path)
+    rc = run_build.build(site=tmp_path / "site", state=tmp_path / "state", work=tmp_path / "work",
+                         deps=deps, pages_base=None, steps=[0], squares=None)
+    assert rc == run_build.BUILT
+    m = json.loads((tmp_path / "site" / "manifest.json").read_text())
+    assert len(m["squares"]) == 9 and "N40W125" in m["squares"] and "S10E100" not in m["squares"]
+    assert any(u.endswith("_FR_LAND.grib2.bz2") for u in calls["downloads"])

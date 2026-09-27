@@ -33,6 +33,11 @@ def file_url(run, step, field):
     return f"{BASE}/{run:%H}/{field.lower()}/{file_name(run, step, field)}"
 
 
+def fr_land_url(run):
+    """DWD's invariant land fraction, published beside every run."""
+    return f"{BASE}/{run:%H}/fr_land/icon_global_icosahedral_time-invariant_{run_id(run)}_FR_LAND.grib2.bz2"
+
+
 def listing_url(hh, field):
     return f"{BASE}/{hh}/{field.lower()}/"
 

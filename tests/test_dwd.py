@@ -1,5 +1,5 @@
 import datetime as dt
-from pipeline.dwd import (STEPS, FIELDS, file_name, file_url, run_from_listing,
+from pipeline.dwd import (STEPS, FIELDS, file_name, file_url, fr_land_url, run_from_listing,
                           missing_files, newest_complete_run, run_id, run_iso)
 
 LISTING = """<html><body><pre><a href="../">../</a>
@@ -68,3 +68,9 @@ def test_run_ids():
     run = dt.datetime(2026, 9, 27, 6, tzinfo=dt.timezone.utc)
     assert run_id(run) == "2026092706"
     assert run_iso(run) == "2026-09-27T06Z"
+
+
+def test_fr_land_url():
+    run = dt.datetime(2026, 9, 27, 0, tzinfo=dt.timezone.utc)
+    assert fr_land_url(run) == ("https://opendata.dwd.de/weather/nwp/icon/grib/00/fr_land/"
+                                "icon_global_icosahedral_time-invariant_2026092700_FR_LAND.grib2.bz2")

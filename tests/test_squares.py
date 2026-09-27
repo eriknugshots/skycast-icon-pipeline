@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 from pipeline.squares import (NX, NY, DEG, SQUARE_DEG, square_name, parse_name, all_squares,
-                              col_indices, row_indices, slice_square)
+                              col_indices, row_indices, slice_square, land_squares)
 
 
 def test_world_grid_dimensions_match_dwd_kit():
@@ -56,3 +56,21 @@ def test_bad_names_raise():
         parse_name("N4W125")
     with pytest.raises(ValueError):
         square_name(41, -125)
+
+
+def test_land_squares_keeps_land_and_its_neighbours_only():
+    frac = np.zeros((NY, NX), dtype=np.float32)
+    rows = row_indices(40); cols = col_indices(-125)
+    frac[rows[20], cols[20]] = 0.5                 # one land cell inside N40W125
+    keep = set(land_squares(frac))
+    assert "N40W125" in keep
+    assert {"N35W130", "N45W120", "N40W130", "N40W120"} <= keep      # the ring around it
+    assert "N40W115" not in keep and "S10E100" not in keep
+    assert len(keep) == 9
+
+
+def test_land_squares_wrap_at_the_dateline():
+    frac = np.zeros((NY, NX), dtype=np.float32)
+    frac[row_indices(0)[5], col_indices(175)[5]] = 1.0
+    keep = set(land_squares(frac))
+    assert {"N00E175", "N00W180", "N00E170"} <= keep

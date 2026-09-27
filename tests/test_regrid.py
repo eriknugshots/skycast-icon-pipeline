@@ -54,3 +54,11 @@ def test_world_from_netcdf_refuses_the_wrong_grid(tmp_path):
     _write_nc(p, np.zeros((10, 10), dtype=np.float32))
     with pytest.raises(ValueError):
         world_from_netcdf(p)
+
+
+def test_world_from_netcdf_scale_turns_a_fraction_into_percent(tmp_path):
+    vals = np.full((1441, 2879), 0.5, dtype=np.float32)
+    p = tmp_path / "f.nc"
+    _write_nc(p, vals, name="FR_LAND")
+    assert world_from_netcdf(p, scale=100)[3, 3] == 50
+    assert world_from_netcdf(p)[3, 3] == 0            # unscaled, 0.5 rounds to 0

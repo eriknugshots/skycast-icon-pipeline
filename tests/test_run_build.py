@@ -101,3 +101,29 @@ def test_a_failed_file_fails_the_build_not_the_site(tmp_path):
                          deps=deps, pages_base=None, steps=[0], squares=["N00E000"])
     assert rc == run_build.FAILED
     assert not (tmp_path / "site" / "manifest.json").exists()
+
+
+class _Resp:
+    """A urlopen() result: headers plus a body served in one piece."""
+    def __init__(self, body, length):
+        self.headers = {"Content-Length": str(length)}
+        self._body = body
+    def read(self, n):
+        b, self._body = self._body[:n], self._body[n:]
+        return b
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+
+
+def test_download_retries_a_short_body_then_raises(tmp_path):
+    bodies = [b"12345", b"12345", b"1234567890"]          # short, short, whole
+    opens = []
+    def urlopen(url, timeout):
+        opens.append(url)
+        return _Resp(bodies[len(opens) - 1], 10)
+    run_build._download("u", tmp_path / "f", urlopen=urlopen)
+    assert len(opens) == 3 and (tmp_path / "f").read_bytes() == b"1234567890"
+    opens.clear()
+    import pytest
+    with pytest.raises(OSError, match="truncated"):
+        run_build._download("u", tmp_path / "g", urlopen=lambda url, timeout: _Resp(b"12", 10))

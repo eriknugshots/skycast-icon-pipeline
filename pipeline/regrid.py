@@ -6,6 +6,7 @@
 # takes whichever variable has the (lat, lon) shape rather than a name.
 import bz2
 import subprocess
+import threading
 import tarfile
 import urllib.request
 from pathlib import Path
@@ -13,6 +14,11 @@ import netCDF4
 import numpy as np
 from .squares import NX, NY
 from .encode import MISSING
+
+# netCDF-C is not thread-safe: six build workers opening Datasets at once
+# died with "NetCDF: Not a valid ID" on the first real run (2026-09-27).
+# The cdo subprocesses still overlap; only the ~50 ms read is serialised.
+_NC_LOCK = threading.Lock()
 
 KIT_URL = "https://opendata.dwd.de/weather/lib/cdo/ICON_GLOBAL2WORLD_0125_EASY.tar.bz2"
 KIT_DIR = "ICON_GLOBAL2WORLD_0125_EASY"
@@ -44,18 +50,19 @@ def unpack_bz2(src, dst):
 
 def world_from_netcdf(path):
     """The one data field of a remapped file as uint8 percent [NY][NX]; masked → MISSING."""
-    ds = netCDF4.Dataset(path)
-    try:
-        var = next((v for v in ds.variables.values()
-                    if v.ndim >= 2 and v.shape[-2:] == (NY, NX)), None)
-        if var is None:
-            raise ValueError(f"no [{NY}][{NX}] field in {path}")
-        arr = var[...]
-        while arr.ndim > 2:
-            arr = arr[0]
-        data = np.ma.filled(np.ma.masked_invalid(arr), -1.0).astype(np.float32)
-    finally:
-        ds.close()
+    with _NC_LOCK:
+        ds = netCDF4.Dataset(path)
+        try:
+            var = next((v for v in ds.variables.values()
+                        if v.ndim >= 2 and v.shape[-2:] == (NY, NX)), None)
+            if var is None:
+                raise ValueError(f"no [{NY}][{NX}] field in {path}")
+            arr = var[...]
+            while arr.ndim > 2:
+                arr = arr[0]
+            data = np.ma.filled(np.ma.masked_invalid(arr), -1.0).astype(np.float32)
+        finally:
+            ds.close()
     out = np.rint(np.clip(data, 0, 100)).astype(np.uint8)
     out[data < 0] = MISSING
     return out

@@ -1,0 +1,83 @@
+name: build
+on:
+  schedule:
+    - cron: "*/10 * * * *"    # run_build exits in seconds unless DWD has a newer complete run
+  push:
+    branches: [main]
+    paths: ["run_build.py", "pipeline/**", ".github/workflows/build.yml"]
+  workflow_dispatch:
+    inputs:
+      steps:
+        description: "comma list of forecast hours (testing; skips the early exit and the state save)"
+        required: false
+      squares:
+        description: "comma list of square names (testing)"
+        required: false
+permissions:
+  contents: write
+concurrency:
+  group: build
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - name: install cdo (conda-forge via micromamba — no apt package worth having)
+        run: |
+          wget -qO mm https://micro.mamba.pm/api/micromamba/linux-64/latest
+          tar -xj -f mm bin/micromamba
+          ./bin/micromamba create -y -q -p /tmp/cdo -c conda-forge cdo
+          # GITHUB_PATH only reaches LATER steps; export for this step's check too.
+          echo "/tmp/cdo/bin" >> "$GITHUB_PATH"
+          export PATH="/tmp/cdo/bin:$PATH"
+          command -v cdo && cdo -V 2>&1 | head -1
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r requirements.txt
+      - run: python -m pytest -q
+      - name: fetch state (history from earlier runs; absent on the first build)
+        run: |
+          if git fetch --depth 1 origin state 2>/dev/null; then
+            git worktree add state origin/state
+          else
+            mkdir -p state
+          fi
+      - name: build
+        id: build
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: |
+          PAGES_BASE="https://$(echo "${GITHUB_REPOSITORY}" | cut -d/ -f1).github.io/$(echo "${GITHUB_REPOSITORY}" | cut -d/ -f2)"
+          set +e
+          python run_build.py --site-dir site --state-dir state --pages-base "$PAGES_BASE" \
+            ${{ inputs.steps && format('--steps {0}', inputs.steps) || '' }} \
+            ${{ inputs.squares && format('--squares {0}', inputs.squares) || '' }}
+          rc=$?
+          set -e
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          if [ "$rc" = "3" ]; then echo "nothing to do"; elif [ "$rc" != "0" ]; then exit "$rc"; fi
+          du -sh site 2>/dev/null || true
+          du -sh state 2>/dev/null || true
+      - name: publish site (orphan force-push to gh-pages)
+        if: steps.build.outputs.rc == '0'
+        run: |
+          cd site
+          git init -b gh-pages -q
+          git -c user.name=pipeline -c user.email=pipeline@users.noreply.github.com add -A
+          git -c user.name=pipeline -c user.email=pipeline@users.noreply.github.com commit -q -m "run $(date -u +%Y%m%dT%H%MZ)"
+          git push --force "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: publish state (orphan force-push to state) — full builds only
+        if: steps.build.outputs.rc == '0' && !inputs.steps
+        run: |
+          cd state
+          rm -rf .git
+          git init -b state -q
+          git -c user.name=pipeline -c user.email=pipeline@users.noreply.github.com add -A
+          git -c user.name=pipeline -c user.email=pipeline@users.noreply.github.com commit -q -m "state $(date -u +%Y%m%dT%H%MZ)"
+          git push --force "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" state
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

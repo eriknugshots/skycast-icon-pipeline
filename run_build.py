@@ -31,10 +31,22 @@ def _http_text(url, timeout=60):
         return r.read().decode("utf-8", "replace")
 
 
-def _download(url, dst, timeout=120):
-    with urllib.request.urlopen(url, timeout=timeout) as r, open(dst, "wb") as f:
-        while chunk := r.read(1 << 20):
-            f.write(chunk)
+def _download(url, dst, timeout=120, attempts=3, urlopen=urllib.request.urlopen):
+    """Fetch url to dst, whole: a short body (a dropped connection, a proxy
+    cutting off) is retried, then raised — never handed to bunzip2 to fail
+    on later, or worse, decoded as far as it goes."""
+    last = None
+    for _ in range(attempts):
+        with urlopen(url, timeout=timeout) as r, open(dst, "wb") as f:
+            want = r.headers.get("Content-Length")
+            got = 0
+            while chunk := r.read(1 << 20):
+                f.write(chunk)
+                got += len(chunk)
+        if want is None or got == int(want):
+            return
+        last = f"{url}: got {got} of {want} bytes"
+    raise OSError(f"download truncated after {attempts} attempts: {last}")
 
 
 REAL = Deps(listing=lambda hh, field: _http_text(dwd.listing_url(hh, field)),

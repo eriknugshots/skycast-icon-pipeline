@@ -1,7 +1,9 @@
 name: build
 on:
   schedule:
-    - cron: "*/10 * * * *"    # run_build exits in seconds unless DWD has a newer complete run
+    # Backstop only: tick.yml starts builds as DWD runs land. GitHub honoured
+    # the old "*/10" only every 3-6 h. Each tick exits in seconds if current.
+    - cron: "41 3,9,15,21 * * *"
   push:
     branches: [main]
     paths: ["run_build.py", "pipeline/**", ".github/workflows/build.yml"]

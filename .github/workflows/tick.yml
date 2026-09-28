@@ -1,0 +1,51 @@
+name: tick
+# Keeps the feed fresh without relying on GitHub's schedule, which fired
+# build.yml's "*/10" only every 3-6 hours (2026-09-27/28) and let the live run
+# age past the app's 12 h limit, so "DWD ICON · Direct" fell back to
+# Open-Meteo. One tick watches DWD every 10 minutes for 5 hours, starts a
+# build the moment a new complete run is listed, then starts the next tick
+# (a workflow may dispatch workflows with its own token). The schedule
+# below only restarts the chain if it ever breaks.
+on:
+  schedule:
+    - cron: "23 */4 * * *"
+  workflow_dispatch:
+permissions:
+  actions: write
+  contents: read
+concurrency:
+  group: tick
+  cancel-in-progress: false
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: watch DWD, build on a new run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PAGES_BASE="https://$(echo "${GITHUB_REPOSITORY}" | cut -d/ -f1).github.io/$(echo "${GITHUB_REPOSITORY}" | cut -d/ -f2)"
+          end=$(( $(date +%s) + 5 * 3600 ))
+          while [ "$(date +%s)" -lt "$end" ]; do
+            set +e
+            python tick.py --pages-base "$PAGES_BASE"
+            rc=$?
+            set -e
+            if [ "$rc" = "0" ]; then
+              gh workflow run build.yml --ref main
+              # A build takes ~6 min and Pages ~1.5 more; don't ask again
+              # until the new manifest can be live.
+              sleep 1800
+            else
+              sleep 600
+            fi
+          done
+      - name: start the next tick
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run tick.yml --ref main

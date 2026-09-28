@@ -16,7 +16,7 @@ from collections import namedtuple
 from pathlib import Path
 import numpy as np
 
-from pipeline import dwd, history, site
+from pipeline import dwd, history, live, site
 from pipeline.encode import encode_square, FIELD_COUNT
 from pipeline.regrid import ensure_kit, regrid
 from pipeline.squares import all_squares, land_squares, parse_name, slice_square, NX, NY
@@ -56,16 +56,8 @@ REAL = Deps(listing=lambda hh, field: _http_text(dwd.listing_url(hh, field)),
 
 
 def live_complete_run(deps, pages_base):
-    """The run the live site carries COMPLETELY, as its iso string, or None.
-    A test build (some steps, some squares) publishes the same run id with
-    complete=false and must not stop the next tick from building it whole."""
-    if not pages_base:
-        return None
-    try:
-        m = json.loads(deps.fetch_text(pages_base.rstrip("/") + "/manifest.json"))
-        return m.get("run") if m.get("complete") else None
-    except Exception:
-        return None
+    """The run the live site carries COMPLETELY (see pipeline/live.py)."""
+    return live.live_complete_run(deps.fetch_text, pages_base)
 
 
 def build(site, state, work, deps, pages_base, steps=None, squares=None, workers=None):

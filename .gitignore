@@ -4,3 +4,4 @@ state/
 __pycache__/
 *.pyc
 .claude/
+node_modules/

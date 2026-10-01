@@ -72,6 +72,19 @@ jobs:
           git push --force "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-node@v4
+        if: steps.build.outputs.rc == '0' && !inputs.steps && !inputs.squares
+        with: { node-version: "22" }
+      - name: publish to Vercel Blob (the app's feed; Pages above stays for older builds) — full builds only
+        if: steps.build.outputs.rc == '0' && !inputs.steps && !inputs.squares
+        continue-on-error: true
+        env:
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+        run: |
+          cd publish
+          npm ci --no-audit --no-fund
+          node --test
+          node blob.mjs ../site
       - name: publish state (orphan force-push to state) — full builds only
         if: steps.build.outputs.rc == '0' && !inputs.steps
         run: |

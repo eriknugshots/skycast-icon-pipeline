@@ -6,7 +6,16 @@ from pipeline.dwd import STEPS, FIELDS, TAIL_STEPS, file_name
 from pipeline.encode import decode_square
 from pipeline.history import save_run_head, hour_of
 from pipeline.squares import NX, NY
+import pytest
 import run_build
+
+# A full build publishes every square on the globe; these tests use nine.
+NINE = ["N35W120", "N35W125", "N35W130", "N40W120", "N40W125", "N40W130", "N45W120", "N45W125", "N45W130"]
+
+
+@pytest.fixture(autouse=True)
+def _nine_squares(monkeypatch):
+    monkeypatch.setattr(run_build, "site_squares", lambda: list(NINE))
 
 UTC = dt.timezone.utc
 RUN = dt.datetime(2026, 9, 27, 0, tzinfo=UTC)
@@ -34,11 +43,6 @@ def _fake_deps(tmp_path, world_value=lambda step, field: 0, prev_manifest=None):
 
     def regrid(grib_bz2, kit, work, scale=1.0):
         name = Path(grib_bz2).name
-        if name.startswith("FR_LAND"):
-            # Land only inside N40W125 (a 0-1 fraction, scaled to percent by the caller).
-            frac = np.zeros((NY, NX), dtype=np.uint8)
-            frac[1050, 450] = 100
-            return frac
         step = int(name.split("_")[-2]); field = name.split("_")[-1].split(".")[0]
         calls["regrids"].append((step, field))
         return np.full((NY, NX), world_value(step, field), dtype=np.uint8)
@@ -134,14 +138,43 @@ def test_download_retries_a_short_body_then_raises(tmp_path):
         run_build._download("u", tmp_path / "g", urlopen=lambda url, timeout: _Resp(b"12", 10))
 
 
-def test_a_full_build_keeps_only_land_adjacent_squares(tmp_path):
+def test_a_full_build_publishes_every_square_and_reads_no_land_mask(tmp_path):
+    # Erik 2026-10-01: DWD ICON covers the whole globe, so an island or a pin
+    # at sea must work the same — no land filter.
     deps, calls = _fake_deps(tmp_path)
     rc = run_build.build(site=tmp_path / "site", state=tmp_path / "state", work=tmp_path / "work",
                          deps=deps, pages_base=None, steps=[0], squares=None)
     assert rc == run_build.BUILT
     m = json.loads((tmp_path / "site" / "manifest.json").read_text())
-    assert len(m["squares"]) == 9 and "N40W125" in m["squares"] and "S10E100" not in m["squares"]
-    assert any(u.endswith("_FR_LAND.grib2.bz2") for u in calls["downloads"])
+    assert m["squares"] == sorted(NINE)
+    assert not any("FR_LAND" in u for u in calls["downloads"])
+
+
+def test_site_squares_is_the_whole_globe(monkeypatch):
+    from pipeline.squares import all_squares
+    monkeypatch.undo()                      # the real one, not the nine above
+    assert run_build.site_squares() == all_squares()
+
+
+def test_values_are_published_in_2_percent_steps(tmp_path):
+    deps, _ = _fake_deps(tmp_path, world_value=lambda step, field: 13)
+    run_build.build(site=tmp_path / "site", state=tmp_path / "state", work=tmp_path / "work",
+                    deps=deps, pages_base=None, steps=[0], squares=None)
+    m = json.loads((tmp_path / "site" / "manifest.json").read_text())
+    sq = decode_square((tmp_path / "site" / m["tiles"] / "N40W125.icl").read_bytes())
+    assert int(sq["cube"].max()) == 14 and int(sq["cube"].min()) == 14
+
+
+def test_over_the_size_budget_the_squares_are_rewritten_in_4_percent_steps(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(run_build, "SITE_BUDGET_BYTES", 1)
+    deps, _ = _fake_deps(tmp_path, world_value=lambda step, field: 13)
+    rc = run_build.build(site=tmp_path / "site", state=tmp_path / "state", work=tmp_path / "work",
+                         deps=deps, pages_base=None, steps=[0], squares=None)
+    assert rc == run_build.BUILT
+    m = json.loads((tmp_path / "site" / "manifest.json").read_text())
+    sq = decode_square((tmp_path / "site" / m["tiles"] / "N40W125.icl").read_bytes())
+    assert int(sq["cube"].max()) == 12
+    assert "::warning::" in capsys.readouterr().out
 
 
 def test_a_partial_live_manifest_does_not_stop_the_full_build(tmp_path):

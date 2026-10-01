@@ -21,6 +21,19 @@ MISSING = 255
 _HEADER = struct.Struct("<4shhHHH")   # magic, swLat, swLon, cols, rows, steps
 
 
+def quantize(cube, step):
+    """Cover rounded to whole `step` percent (half up, never past 100); MISSING
+    is kept. Fewer distinct values compress far better: 2 % steps measured 0.79
+    of the bytes, 4 % 0.66 (2026-10-01) — what lets the whole globe, ocean
+    included, fit Pages' 1 GB. Invisible in the sky and in the score."""
+    cube = np.asarray(cube, dtype=np.uint8)
+    if step <= 1:
+        return cube
+    v = cube.astype(np.int16)
+    q = np.minimum(100, ((v + step // 2) // step) * step)
+    return np.where(v == MISSING, MISSING, q).astype(np.uint8)
+
+
 def encode_square(sw_lat, sw_lon, step_hours, cube):
     """cube: uint8 [steps][4][41][41]. step_hours: ascending unix hours."""
     cube = np.asarray(cube)

@@ -2,7 +2,7 @@ import struct
 import zlib
 import numpy as np
 import pytest
-from pipeline.encode import encode_square, decode_square, MISSING, FIELD_COUNT
+from pipeline.encode import encode_square, decode_square, quantize, MISSING, FIELD_COUNT
 
 
 def _cube(steps=3, n=41, seed=1):
@@ -48,3 +48,13 @@ def test_refuses_unsorted_steps_and_bad_shapes():
         encode_square(sw_lat=0, sw_lon=0, step_hours=[1], cube=cube)          # 2 steps, 1 hour
     with pytest.raises(ValueError):
         encode_square(sw_lat=0, sw_lon=0, step_hours=[1, 2], cube=cube.astype(np.int16))
+
+
+def test_quantize_rounds_to_whole_steps_half_up_and_keeps_missing():
+    # Erik 2026-10-01: the whole globe, ocean included, must fit Pages' 1 GB;
+    # 2 % steps measured 0.79 of today's bytes. Half rounds UP, never past 100.
+    cube = np.array([0, 1, 13, 49, 99, 100, MISSING], dtype=np.uint8)
+    assert quantize(cube, 2).tolist() == [0, 2, 14, 50, 100, 100, MISSING]
+    assert quantize(cube, 4).tolist() == [0, 0, 12, 48, 100, 100, MISSING]
+    assert quantize(cube, 1).tolist() == cube.tolist()
+    assert quantize(cube, 2).dtype == np.uint8

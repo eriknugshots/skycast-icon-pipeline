@@ -17,9 +17,9 @@ from pathlib import Path
 import numpy as np
 
 from pipeline import dwd, history, live, site
-from pipeline.encode import encode_square, FIELD_COUNT
+from pipeline.encode import encode_square, quantize, FIELD_COUNT
 from pipeline.regrid import ensure_kit, regrid
-from pipeline.squares import all_squares, land_squares, parse_name, slice_square, NX, NY
+from pipeline.squares import all_squares, parse_name, slice_square, NX, NY
 
 BUILT, NOTHING_TO_DO, FAILED = 0, 3, 1
 ROOT = Path(__file__).resolve().parent
@@ -76,19 +76,10 @@ def build(site, state, work, deps, pages_base, steps=None, squares=None, workers
     if squares is not None:
         names = list(squares)
     else:
-        # Land-adjacent squares only (squares.land_squares): the whole world
-        # measured ~0.6-1 GB against Pages' 1 GB, and open ocean is in no
-        # one's window. FR_LAND is DWD's invariant land fraction, 0-1.
-        try:
-            dst = work / "FR_LAND.grib2.bz2"
-            deps.download(dwd.fr_land_url(run), dst)
-            frac = deps.regrid(dst, kit, work, scale=100).astype(np.float32) / 100.0
-            dst.unlink(missing_ok=True)
-        except Exception as e:
-            print(f"::error::FR_LAND failed: {e}")
-            return FAILED
-        names = land_squares(frac)
-        print(f"{len(names)} of {len(all_squares())} squares touch land or a neighbour that does")
+        # Every square: ICON covers the globe, and an island or a pin at sea
+        # must work the same as anywhere (Erik, 2026-10-01). It fits Pages'
+        # 1 GB because cover is published in QUANT_STEP steps (encode.quantize).
+        names = site_squares()
     print(f"building run {dwd.run_iso(run)}: {len(steps)} steps × {FIELD_COUNT} fields, {len(names)} squares")
 
     # One world array per (step, field). ~4 MB each as uint8: 93 × 4 = 1.5 GB
@@ -124,11 +115,26 @@ def build(site, state, work, deps, pages_base, steps=None, squares=None, workers
 
     tiles = site / site_tiles(run)
     tiles.mkdir(parents=True, exist_ok=True)
-    for name in names:
-        lat, lon = parse_name(name)
-        cube = np.stack([slice_square(arr, lat, lon) for _, arr in stacks])
-        (tiles / f"{name}.icl").write_bytes(encode_square(lat, lon, hours, cube))
+
+    def write_squares(step):
+        total = 0
+        for name in names:
+            lat, lon = parse_name(name)
+            cube = np.stack([slice_square(arr, lat, lon) for _, arr in stacks])
+            blob = encode_square(lat, lon, hours, quantize(cube, step))
+            (tiles / f"{name}.icl").write_bytes(blob)
+            total += len(blob)
+        return total
+
+    size = write_squares(QUANT_STEP)
     tail = build_tail(site, work, deps, kit, names, workers) if full else None
+    site_bytes = size + _dir_bytes(site / site_tail_tiles_root())
+    if site_bytes > SITE_BUDGET_BYTES:
+        print(f"::warning::{site_bytes / 1e6:.0f} MB is over the {SITE_BUDGET_BYTES / 1e6:.0f} MB budget: "
+              f"rewriting the squares in {QUANT_FALLBACK_STEP} % steps")
+        size = write_squares(QUANT_FALLBACK_STEP)
+        site_bytes = size + _dir_bytes(site / site_tail_tiles_root())
+    print(f"site: {site_bytes / 1e6:.0f} MB in squares")
     (site / "manifest.json").write_text(site_manifest(run, deps.now(), hours, names, len(past), full, tail))
 
     # The run's hours 0-5, for the next build's history — only when they were built.
@@ -139,6 +145,26 @@ def build(site, state, work, deps, pages_base, steps=None, squares=None, workers
         history.prune(state, dwd.run_id(run))
     print(f"built {len(names)} squares, {len(hours)} steps ({len(past)} history)")
     return BUILT
+
+
+# Pages refuses a site over 1 GB; leave room for the manifest and a tail.
+SITE_BUDGET_BYTES = 900 * 1000 * 1000
+QUANT_STEP = 2
+QUANT_FALLBACK_STEP = 4
+
+
+def site_squares():
+    """Every 5° square on the globe (squares.all_squares)."""
+    return all_squares()
+
+
+def _dir_bytes(path):
+    path = Path(path)
+    return sum(p.stat().st_size for p in path.rglob("*") if p.is_file()) if path.exists() else 0
+
+
+def site_tail_tiles_root():
+    return "tail"
 
 
 def site_tiles(run):
@@ -185,7 +211,7 @@ def build_tail(site_dir, work, deps, kit, names, workers):
         for name in names:
             lat, lon = parse_name(name)
             cube = np.stack([slice_square(arr, lat, lon) for arr in stacks])
-            (tiles / f"{name}.icl").write_bytes(encode_square(lat, lon, hours, cube))
+            (tiles / f"{name}.icl").write_bytes(encode_square(lat, lon, hours, quantize(cube, QUANT_STEP)))
     except Exception as e:
         print(f"::warning::tail failed: {e}")
         return None

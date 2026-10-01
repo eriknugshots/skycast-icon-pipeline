@@ -2,7 +2,7 @@ import datetime as dt
 import json
 import numpy as np
 from pathlib import Path
-from pipeline.dwd import STEPS, FIELDS, file_name
+from pipeline.dwd import STEPS, FIELDS, TAIL_STEPS, file_name
 from pipeline.encode import decode_square
 from pipeline.history import save_run_head, hour_of
 from pipeline.squares import NX, NY
@@ -158,3 +158,54 @@ def test_a_full_build_marks_the_manifest_complete(tmp_path):
     run_build.build(site=tmp_path / "site", state=tmp_path / "state", work=tmp_path / "work",
                     deps=deps, pages_base=None, steps=None, squares=None)
     assert json.loads((tmp_path / "site" / "manifest.json").read_text())["complete"] is True
+
+
+def _fake_deps_with_tail(tmp_path, tail_fails=False):
+    deps, calls = _fake_deps(tmp_path, world_value=lambda step, field: 90 if step >= 123 else 10)
+
+    def listing(hh, field):
+        if hh != "00":
+            return ""
+        return _listing(RUN, field, steps=list(STEPS) + list(TAIL_STEPS))
+
+    def download(url, dst):
+        if tail_fails and "_123_" in url:
+            raise OSError("tail down")
+        calls["downloads"].append(url)
+        Path(dst).write_bytes(b"fake")
+    return deps._replace(listing=listing, download=download), calls
+
+
+def test_a_full_build_publishes_the_tail(tmp_path):
+    deps, calls = _fake_deps_with_tail(tmp_path)
+    rc = run_build.build(site=tmp_path / "site", state=tmp_path / "state", work=tmp_path / "work",
+                         deps=deps, pages_base="https://x", steps=None, squares=None, workers=2)
+    assert rc == run_build.BUILT
+    m = json.loads((tmp_path / "site" / "manifest.json").read_text())
+    base = int(RUN.timestamp()) // 3600
+    assert m["tail"]["run"] == "2026-09-27T00Z"
+    assert m["tail"]["tiles"] == "tail/2026092700"
+    assert m["tail"]["stepsMs"] == [(base + s) * 3600 * 1000 for s in TAIL_STEPS]
+    sq = decode_square((tmp_path / "site" / "tail" / "2026092700" / "N40W125.icl").read_bytes())
+    assert sq["step_hours"] == [base + s for s in TAIL_STEPS]
+    assert int(sq["cube"][0, 0, 0, 0]) == 90
+    assert sum(1 for u in calls["downloads"] if "_123_" in u) == len(FIELDS)
+
+
+def test_a_tail_failure_never_fails_the_build(tmp_path):
+    deps, _ = _fake_deps_with_tail(tmp_path, tail_fails=True)
+    rc = run_build.build(site=tmp_path / "site", state=tmp_path / "state", work=tmp_path / "work",
+                         deps=deps, pages_base="https://x", steps=None, squares=None, workers=2)
+    assert rc == run_build.BUILT
+    m = json.loads((tmp_path / "site" / "manifest.json").read_text())
+    assert m["tail"] is None
+    assert (tmp_path / "site" / "tiles" / "2026092700" / "N40W125.icl").exists()
+
+
+def test_a_test_build_makes_no_tail(tmp_path):
+    deps, calls = _fake_deps_with_tail(tmp_path)
+    rc = run_build.build(site=tmp_path / "site", state=tmp_path / "state", work=tmp_path / "work",
+                         deps=deps, pages_base="https://x", steps=[0, 1], squares=["N40W125"], workers=2)
+    assert rc == run_build.BUILT
+    assert json.loads((tmp_path / "site" / "manifest.json").read_text())["tail"] is None
+    assert not any("_123_" in u for u in calls["downloads"])

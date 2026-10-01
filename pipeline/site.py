@@ -14,7 +14,11 @@ def tiles_path(run):
     return f"tiles/{run_id(run)}"
 
 
-def build_manifest(run, built, step_hours, squares, history_hours, complete=True):
+def tail_path(run):
+    return f"tail/{run_id(run)}"
+
+
+def build_manifest(run, built, step_hours, squares, history_hours, complete=True, tail=None):
     out = {
         "run": run_iso(run),
         # False for a test build (some steps, some squares). Only a complete
@@ -28,6 +32,9 @@ def build_manifest(run, built, step_hours, squares, history_hours, complete=True
         "historySteps": int(history_hours),
         "squares": sorted(set(squares)),
         "tiles": tiles_path(run),
+        # Hours 123-144 of the newest whole 00Z/12Z run, for the app's days
+        # 4-5 ({run, runMs, stepsMs, tiles}), or None. See run_build.build_tail.
+        "tail": tail,
         "attribution": ATTRIBUTION,
     }
     return json.dumps(out, separators=(",", ":"))

@@ -128,7 +128,8 @@ def build(site, state, work, deps, pages_base, steps=None, squares=None, workers
         lat, lon = parse_name(name)
         cube = np.stack([slice_square(arr, lat, lon) for _, arr in stacks])
         (tiles / f"{name}.icl").write_bytes(encode_square(lat, lon, hours, cube))
-    (site / "manifest.json").write_text(site_manifest(run, deps.now(), hours, names, len(past), full))
+    tail = build_tail(site, work, deps, kit, names, workers) if full else None
+    (site / "manifest.json").write_text(site_manifest(run, deps.now(), hours, names, len(past), full, tail))
 
     # The run's hours 0-5, for the next build's history — only when they were built.
     head_steps = [s for s in range(history.HEAD_STEPS) if s in steps]
@@ -144,8 +145,53 @@ def site_tiles(run):
     return site.tiles_path(run)
 
 
-def site_manifest(run, built, hours, names, history_steps, complete):
-    return site.build_manifest(run, built, hours, names, history_steps, complete)
+def site_manifest(run, built, hours, names, history_steps, complete, tail=None):
+    return site.build_manifest(run, built, hours, names, history_steps, complete, tail)
+
+
+def site_tail_tiles(run):
+    return site.tail_path(run)
+
+
+def build_tail(site_dir, work, deps, kit, names, workers):
+    """The tail: hours 123-144 of the newest whole 00Z/12Z run, one .icl per
+    square under tail/<run>/, for SkyCast's days 4-5. DWD keeps each run
+    hour's newest run online, so any build can make it — nothing is carried
+    between builds. Returns the manifest's `tail` entry, or None; a failure
+    here never fails the build."""
+    try:
+        run = dwd.newest_complete_run(deps.listing, run_hours=dwd.TAIL_RUN_HOURS, steps=dwd.TAIL_STEPS)
+        if run is None:
+            print("::warning::no whole 00Z/12Z run for the tail")
+            return None
+        world = {}
+
+        def job(step, field):
+            dst = work / dwd.file_name(run, step, field)
+            deps.download(dwd.file_url(run, step, field), dst)
+            try:
+                return step, field, deps.regrid(dst, kit, work, scale=1.0)
+            finally:
+                dst.unlink(missing_ok=True)
+
+        with cf.ThreadPoolExecutor(max_workers=workers) as pool:
+            for step, field, arr in pool.map(lambda sf: job(*sf), [(s, f) for s in dwd.TAIL_STEPS for f in dwd.FIELDS]):
+                world[(step, field)] = arr
+        base = history.hour_of(run)
+        hours = [base + s for s in dwd.TAIL_STEPS]
+        stacks = [np.stack([world[(s, f)] for f in dwd.FIELDS]) for s in dwd.TAIL_STEPS]
+        tiles = Path(site_dir) / site_tail_tiles(run)
+        tiles.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            lat, lon = parse_name(name)
+            cube = np.stack([slice_square(arr, lat, lon) for arr in stacks])
+            (tiles / f"{name}.icl").write_bytes(encode_square(lat, lon, hours, cube))
+    except Exception as e:
+        print(f"::warning::tail failed: {e}")
+        return None
+    print(f"tail: run {dwd.run_iso(run)}, {len(hours)} steps, {len(names)} squares")
+    return {"run": dwd.run_iso(run), "runMs": int(run.timestamp() * 1000),
+            "stepsMs": [h * 3600 * 1000 for h in hours], "tiles": site_tail_tiles(run)}
 
 
 def main():

@@ -1,5 +1,5 @@
 import datetime as dt
-from pipeline.dwd import (STEPS, FIELDS, file_name, file_url, fr_land_url, run_from_listing,
+from pipeline.dwd import (STEPS, FIELDS, TAIL_RUN_HOURS, TAIL_STEPS, file_name, file_url, fr_land_url, run_from_listing,
                           missing_files, newest_complete_run, run_id, run_iso)
 
 LISTING = """<html><body><pre><a href="../">../</a>
@@ -74,3 +74,23 @@ def test_fr_land_url():
     run = dt.datetime(2026, 9, 27, 0, tzinfo=dt.timezone.utc)
     assert fr_land_url(run) == ("https://opendata.dwd.de/weather/nwp/icon/grib/00/fr_land/"
                                 "icon_global_icosahedral_time-invariant_2026092700_FR_LAND.grib2.bz2")
+
+
+def test_tail_steps_are_3_hourly_123_to_144_from_00z_and_12z():
+    assert TAIL_STEPS == list(range(123, 145, 3))
+    assert TAIL_STEPS[0] == 123 and TAIL_STEPS[-1] == 144 and len(TAIL_STEPS) == 8
+    assert TAIL_RUN_HOURS == ["00", "12"]
+
+
+def test_completeness_can_check_other_steps_and_run_hours():
+    run = dt.datetime(2026, 9, 30, 0, tzinfo=dt.timezone.utc)
+    html = "".join(f'<a href="{file_name(run, s, "CLCL")}">x</a>' for s in TAIL_STEPS)
+    assert missing_files(html, run, "CLCL", steps=TAIL_STEPS) == []
+    assert missing_files(html, run, "CLCL")            # the near steps are not there
+
+    def listing(hh, field):
+        if hh != "00":
+            return ""
+        return "".join(f'<a href="{file_name(run, s, field)}">x</a>' for s in TAIL_STEPS)
+    assert newest_complete_run(listing, run_hours=TAIL_RUN_HOURS, steps=TAIL_STEPS) == run
+    assert newest_complete_run(listing) is None         # the near product is unaffected

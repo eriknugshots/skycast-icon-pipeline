@@ -14,6 +14,12 @@ FIELDS = ["CLCL", "CLCM", "CLCH", "CLCT"]          # low, mid, high, total — t
 # app's window (today+2, 23:59 local, any zone) from a run up to 9 h old.
 STEPS = list(range(0, 79)) + list(range(81, 121, 3))
 
+# The tail, for days 4-5 in the app (Premium's 5-day forecast): hours 123-144
+# of the newest whole 00Z or 12Z run. Only those two runs go past 120 h
+# (verified on DWD's listing 2026-09-30: 00/12 reach 180, 06/18 stop at 120).
+TAIL_RUN_HOURS = ["00", "12"]
+TAIL_STEPS = list(range(123, 145, 3))
+
 _NAME = re.compile(r"icon_global_icosahedral_single-level_(\d{10})_(\d{3})_([A-Z]+)\.grib2\.bz2")
 
 
@@ -50,21 +56,23 @@ def run_from_listing(html):
     return dt.datetime.strptime(m.group(1), "%Y%m%d%H").replace(tzinfo=dt.timezone.utc)
 
 
-def missing_files(html, run, field):
+def missing_files(html, run, field, steps=None):
+    steps = STEPS if steps is None else steps
     present = set(_NAME.findall(html or ""))
-    return [file_name(run, s, field) for s in STEPS
+    return [file_name(run, s, field) for s in steps
             if (run_id(run), f"{s:03d}", field) not in present]
 
 
-def newest_complete_run(listing):
+def newest_complete_run(listing, run_hours=None, steps=None):
     """`listing(hh, field) -> html`. The newest run (by time) whose every
-    needed file is listed for every field, else None."""
+    needed file is listed for every field, else None. Defaults: the near
+    product's run hours and steps."""
     candidates = []
-    for hh in RUN_HOURS:
+    for hh in (RUN_HOURS if run_hours is None else run_hours):
         html = listing(hh, FIELDS[0])
         run = run_from_listing(html)
         if run is None:
             continue
-        if all(not missing_files(html if f == FIELDS[0] else listing(hh, f), run, f) for f in FIELDS):
+        if all(not missing_files(html if f == FIELDS[0] else listing(hh, f), run, f, steps) for f in FIELDS):
             candidates.append(run)
     return max(candidates) if candidates else None

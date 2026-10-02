@@ -7,6 +7,10 @@ name: columns-measure
 # column feed's fields, format or node spacing.
 on:
   workflow_dispatch:
+    inputs:
+      only:
+        description: "all = sizes, time and checks; interp = only the interpolation error by spacing"
+        default: all
 permissions:
   contents: read
 concurrency:
@@ -31,7 +35,8 @@ jobs:
       - name: measure (writes only under /mnt/measure)
         env:
           PYTHONUNBUFFERED: "1"
+          ONLY: ${{ inputs.only }}
         run: |
           sudo mkdir -p /mnt/measure && sudo chown "$USER" /mnt/measure
           nproc; free -g; df -h / /mnt
-          python tools/measure_columns.py --out /mnt/measure --strides 2,4,8
+          python tools/measure_columns.py --out /mnt/measure --strides 2,4,8 --only "${ONLY:-all}"

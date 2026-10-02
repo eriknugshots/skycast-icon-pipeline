@@ -37,6 +37,8 @@ def main():
     ap.add_argument("--strides", default="2,4,8")
     ap.add_argument("--steps", default=None, help="comma list (default: dwd.STEPS)")
     ap.add_argument("--workers", type=int, default=int(os.environ.get("BUILD_WORKERS", "6")))
+    ap.add_argument("--only", choices=["all", "interp"], default="all",
+                    help="interp: only the interpolation-error check (for choosing the spacing)")
     a = ap.parse_args()
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     strides = sorted(int(s) for s in a.strides.split(","))
@@ -55,6 +57,9 @@ def main():
     if missing:
         raise SystemExit(1)
     kit = deps.ensure_kit(work)
+    if a.only == "interp":
+        interpolation_error(deps, kit, work, run, strides, summary)
+        return
 
     # DWD's weights, and our lattice cut of them checked against cdo's own
     # full remap on real fields (step 0: T on seven levels, T_2M, HSURF).
@@ -171,6 +176,90 @@ def main():
     for f, codes in zip(d["spec"], d["fields"]):
         v = columns.dequantize(codes[r, c] if f[1] == columns.STATIC else codes[r, c, 0], f[3], f[4])
         out(f"  {columns.KIND_NAMES[f[0]]:5s} lt{f[1]} {f[2]:5d}: {float(v):9.2f}", summary)
+
+
+# ---- What a coarser spacing costs where it matters: near the ground ----------
+
+INTERP_STEPS = list(range(0, 24, 3))          # one day, every 3 h: night inversions and afternoon mixing
+BEND = (44.06, -121.31)
+
+
+def bilinear_from(coarse, m, shape):
+    """Every m-th point (coarse) → bilinear back onto the full [ny][nx] grid."""
+    ny, nx = shape
+    cy, cx = coarse.shape
+
+    def axis(n, c):
+        x = np.arange(n) / m
+        lo = np.minimum(np.floor(x).astype(int), c - 1)
+        hi = np.minimum(lo + 1, c - 1)
+        return lo, hi, np.clip(x - lo, 0.0, 1.0)
+    i0, i1, fi = axis(ny, cy)
+    j0, j1, fj = axis(nx, cx)
+    top = coarse[i0][:, j0] * (1 - fj) + coarse[i0][:, j1] * fj
+    bot = coarse[i1][:, j0] * (1 - fj) + coarse[i1][:, j1] * fj
+    return top * (1 - fi)[:, None] + bot * fi[:, None]
+
+
+def interpolation_error(deps, kit, work, run, strides, summary):
+    """The full 0.125° grid (what Open-Meteo serves a point from) is the
+    truth; each spacing's nodes, bilinearly interpolated to every 0.125°
+    point between them, the estimate. Fields: model surface height, T and
+    RH at 2 m, T at 80 m, and the near-surface inversion T80 − T2m (> 0:
+    warmer aloft, the stable layer radiation fog forms under), over one day."""
+    def one(field, name):
+        return run_build._only(run_build._fetch_levels(deps, kit, work, [name], run, field, 1)).astype(np.float64)
+    hs = one("HSURF", dwd.invariant_file_name(run, "HSURF"))
+    hhl = {lv: one("HHL", dwd.invariant_file_name(run, "HHL", lv)) for lv in dwd.COLUMN_HHL_LEVELS}
+    w80 = run_build.t80_weights(hhl, hs)
+    # Steep ground: more than 300 m of relief among a point and its 8 neighbours.
+    pad = np.pad(hs, 1, mode="edge")
+    win = np.stack([pad[1 + di:1 + di + hs.shape[0], 1 + dj:1 + dj + hs.shape[1]]
+                    for di in (-1, 0, 1) for dj in (-1, 0, 1)])
+    steep = (win.max(0) - win.min(0)) > 300.0
+    land = hs > 1.0
+    out(f"### Interpolation error by spacing (truth: the 0.125° grid; {land.sum()} land points, "
+        f"{steep.sum()} on steep ground, {len(INTERP_STEPS)} hours of run {dwd.run_iso(run)})", summary)
+    fields = {"HSURF m": [hs]}
+    for key in ("T 2 m °C", "T 80 m °C", "T80 − T2m °C", "RH 2 m %"):
+        fields[key] = []
+    for s in INTERP_STEPS:
+        t2 = one("T_2M", dwd.file_name(run, s, "T_2M")) - run_build.K0
+        rh = one("RELHUM_2M", dwd.file_name(run, s, "RELHUM_2M"))
+        t80 = sum(w80[lv] * one("T", dwd.model_file_name(run, s, lv, "T")) for lv in dwd.COLUMN_MLEVELS) - run_build.K0
+        fields["T 2 m °C"].append(t2)
+        fields["T 80 m °C"].append(t80)
+        fields["T80 − T2m °C"].append(t80 - t2)
+        fields["RH 2 m %"].append(rh)
+    rows = []
+    bi, bj = round((BEND[0] + 90) / 0.125), round((BEND[1] + 180) / 0.125)
+    bend = {}
+    for stride in strides:
+        off = np.ones(hs.shape, dtype=bool)
+        off[::stride, ::stride] = False              # points the nodes do not already hold
+        for key, arrs in fields.items():
+            errs = {"land": [], "steep": []}
+            for k, truth in enumerate(arrs):
+                est = bilinear_from(truth[::stride, ::stride], stride, truth.shape)
+                e = np.abs(est - truth)
+                errs["land"].append(e[off & land])
+                errs["steep"].append(e[off & steep])
+                bend.setdefault((stride, key), []).append((float(truth[bi, bj]), float(est[bi, bj])))
+            cells = []
+            for sub in ("land", "steep"):
+                e = np.concatenate(errs[sub])
+                e = e[np.isfinite(e)]
+                p = np.percentile(e, [50, 95, 99]) if e.size else [np.nan] * 3
+                cells.append(f"{p[0]:.2f} / {p[1]:.2f} / {p[2]:.2f}")
+            rows.append(f"| {columns.spacing_deg(stride)}° | {key} | {cells[0]} | {cells[1]} |")
+    out("| spacing | field | land: abs error p50 / p95 / p99 | steep ground: p50 / p95 / p99 |\n"
+        "|---|---|---|---|", summary)
+    for r in rows:
+        out(r, summary)
+    out(f"Bend, OR ({bi * 0.125 - 90:.3f}, {bj * 0.125 - 180:.3f}), truth → estimate per spacing, "
+        f"hours {INTERP_STEPS}:", summary)
+    for (stride, key), pairs in bend.items():
+        out(f"  {columns.spacing_deg(stride)}° {key}: " + ", ".join(f"{t:.1f}→{e:.1f}" for t, e in pairs[:8]), summary)
 
 
 if __name__ == "__main__":

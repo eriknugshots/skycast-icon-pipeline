@@ -114,5 +114,9 @@ def test_missing_column_files_names_what_the_listings_lack():
     assert missing_column_files(lambda hh, field: pages.get(field, "") if hh == "00" else "", run, [0, 1]) == [gone]
     pages["FI"] += f'<a href="{gone}">x</a>'
     assert missing_column_files(lambda hh, field: pages.get(field, "") if hh == "00" else "", run, [0, 1]) == []
-    # Per step: 3 fields × 7 levels, 2 model levels, 2 single-level fields; once: HSURF + 3 HHL.
-    assert sum(len(v) for v in files.values()) == 2 * (3 * 7 + 2 + 2) + 1 + 3
+    # Per step: each pressure field on each level, each model level's T, each
+    # single-level field; once per run: HSURF and each HHL half level.
+    from pipeline.dwd import COLUMN_PFIELDS, COLUMN_PLEVELS, COLUMN_MLEVELS, COLUMN_SFIELDS, COLUMN_HHL_LEVELS
+    per_step = len(COLUMN_PFIELDS) * len(COLUMN_PLEVELS) + len(COLUMN_MLEVELS) + len(COLUMN_SFIELDS)
+    assert sum(len(v) for v in files.values()) == 2 * per_step + 1 + len(COLUMN_HHL_LEVELS)
+    assert len(set(n for v in files.values() for n in v)) == sum(len(v) for v in files.values())

@@ -280,15 +280,30 @@ def _to_codes(key, arr):
 
 
 def t80_weights(hhl, hsurf):
-    """hhl: {half level: lattice height MSL}, hsurf: lattice MSL. The weight
-    w of the UPPER model level such that T(80 m above ground) = (1 − w) ·
-    T(lower) + w · T(upper), linear in height between the two full levels of
-    dwd.COLUMN_MLEVELS (a full level sits midway between its half levels)."""
-    upper, lower = sorted(dwd.COLUMN_MLEVELS)                 # 117 is above 118
-    z_up = (hhl[upper] + hhl[upper + 1]) / 2 - hsurf
-    z_lo = (hhl[lower] + hhl[lower + 1]) / 2 - hsurf
-    with np.errstate(invalid="ignore", divide="ignore"):
-        return (80.0 - z_lo) / (z_up - z_lo)
+    """hhl: {half level: lattice height MSL}, hsurf: lattice MSL →
+    {model level: weight lattice}, summing to 1 at each node, such that
+    T(80 m above ground) = Σ weight · T(level). At each node the two adjacent
+    levels of dwd.COLUMN_MLEVELS that bracket 80 m are used, linear in height
+    (a full level sits midway between its half levels); where 80 m is above
+    or below them all, the nearest level alone — clamped, never
+    extrapolated. NaN where a height is missing."""
+    levels = sorted(dwd.COLUMN_MLEVELS)                       # top first: 117 is above 118
+    z = {lv: (hhl[lv] + hhl[lv + 1]) / 2 - hsurf for lv in levels}
+    w = {lv: np.zeros(np.shape(hsurf)) for lv in levels}
+    done = np.zeros(np.shape(hsurf), dtype=bool)
+    pairs = list(zip(levels, levels[1:]))                     # (upper, lower), top pair first
+    for k, (up, lo) in enumerate(reversed(pairs)):            # bottom pair first
+        top = k == len(pairs) - 1
+        here = ~done & ((z[up] >= 80.0) | top)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            f = np.clip((80.0 - z[lo]) / (z[up] - z[lo]), 0.0, 1.0)
+        w[up] = np.where(here, f, w[up])
+        w[lo] = np.where(here, 1.0 - f, w[lo])
+        done |= here
+    bad = np.zeros(np.shape(hsurf), dtype=bool)
+    for lv in levels:
+        bad |= ~np.isfinite(z[lv])
+    return {lv: np.where(bad, np.nan, w[lv]) for lv in levels}
 
 
 def _wait_for_column_files(deps, run, steps):
@@ -343,7 +358,7 @@ def _only(levels):
 
 
 def column_statics(deps, kit, work, run, stride):
-    """(HSURF lattice codes [1][LY][LX], T80 weight lattice) — once per run."""
+    """(HSURF lattice codes [1][LY][LX], {model level: T80 weight lattice}) — once per run."""
     hsurf = _only(_fetch_levels(deps, kit, work, [dwd.invariant_file_name(run, "HSURF")], run, "HSURF", stride))
     hhl = {}
     for lv in dwd.COLUMN_HHL_LEVELS:          # one cdo call each: no level axis to trust
@@ -365,10 +380,10 @@ def column_step(deps, kit, work, run, step, group, stride, w80):
         arr = _only(_fetch_levels(deps, kit, work, [dwd.file_name(run, step, group)], run, group, stride))
         return {(group, None): _to_codes((group, None), arr)}
     if group == "T_80M":
-        upper, lower = sorted(dwd.COLUMN_MLEVELS)
-        t = {lv: _only(_fetch_levels(deps, kit, work, [dwd.model_file_name(run, step, lv, "T")], run, "T", stride))
-             for lv in (upper, lower)}
-        t80 = (1 - w80) * t[lower] + w80 * t[upper]
+        t80 = 0.0
+        for lv in dwd.COLUMN_MLEVELS:          # one cdo call each: no level axis to trust
+            t = _only(_fetch_levels(deps, kit, work, [dwd.model_file_name(run, step, lv, "T")], run, "T", stride))
+            t80 = t80 + w80[lv] * t
         return {("T_80M", None): _to_codes(("T_80M", None), t80)}
     raise KeyError(group)
 
@@ -396,21 +411,24 @@ def fetch_columns(deps, kit, work, run, steps, workers, stride):
     return static, own
 
 
-def write_columns(site_dir, run, names, stride, static, stacks):
-    """One .icc per square under columns/<run>/; returns the bytes written."""
+def write_columns(site_dir, run, names, stride, static, stacks, workers=1):
+    """One .icc per square under columns/<run>/; returns the bytes written.
+    zlib releases the GIL, so squares encode in parallel threads."""
     spec = column_spec()
     hours = [h for h, _ in stacks]
     tiles = Path(site_dir) / site_columns_tiles(run)
     tiles.mkdir(parents=True, exist_ok=True)
-    total = 0
-    for name in names:
+
+    def one(name):
         lat, lon = parse_name(name)
         cube = np.stack([columns.slice_nodes(c, lat, lon, stride) for _, c in stacks])
         blob = columns.encode_columns(lat, lon, stride, hours, spec, cube,
                                       columns.slice_nodes(static, lat, lon, stride))
         (tiles / f"{name}.icc").write_bytes(blob)
-        total += len(blob)
-    return total
+        return len(blob)
+
+    with cf.ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        return sum(pool.map(one, names))
 
 
 def build_columns(site_dir, state, work, deps, kit, run, steps, names, workers, stride=None):
@@ -434,7 +452,7 @@ def build_columns(site_dir, state, work, deps, kit, run, steps, names, workers, 
             history.save_run_head(state, run, np.stack([by_hour[base + s] for s in head_steps]),
                                   sub="columns", dtype=np.uint16)
             history.prune(state, dwd.run_id(run), sub="columns")
-        total = write_columns(site_dir, run, names, stride, static, stacks)
+        total = write_columns(site_dir, run, names, stride, static, stacks, workers)
     except Exception as e:
         print(f"::warning::columns failed: {type(e).__name__}: {e}")
         shutil.rmtree(Path(site_dir) / site_columns_root(), ignore_errors=True)

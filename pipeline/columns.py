@@ -28,6 +28,9 @@ from .squares import DEG, SIDE, row_indices, col_indices
 MAGIC = b"ICC1"
 MISSING = 0xFFFF
 MAX_CODE = MISSING - 1
+# zlib level: 9 took ~5 s per 0.25° square (153 steps) for 2 % fewer bytes
+# than 6, which takes ~0.3 s; the cloud squares use 6 too.
+ZLIB_LEVEL = 6
 _HEADER = struct.Struct("<4shhHHHHH")   # magic, swLat, swLon, spacing mdeg, cols, rows, steps, fields
 _FIELD = struct.Struct("<BBHff")        # kind, levelType, level, scale, offset
 
@@ -155,7 +158,7 @@ def encode_columns(sw_lat, sw_lon, stride, step_hours, spec, steps_codes, static
                         n, n, len(hours), len(spec))
     times = struct.pack(f"<{len(hours)}I", *hours)
     table = b"".join(_FIELD.pack(k, lt, lv, sc, off) for k, lt, lv, sc, off in spec)
-    return head + times + table + zlib.compress(_planes(body), 9)
+    return head + times + table + zlib.compress(_planes(body), ZLIB_LEVEL)
 
 
 def header_bytes(steps, fields):

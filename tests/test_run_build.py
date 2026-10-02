@@ -258,7 +258,8 @@ from pipeline.dwd import COLUMN_PLEVELS, COLUMN_MLEVELS, column_files
 # Fake DWD values in DWD's units, chosen so every app-unit number below is
 # computed from them, never typed in.
 HSURF_M = 1117.0
-HHL_AGL = {117: 113.0, 118: 61.0, 119: 23.0}   # half levels above ground: full 117 → 87 m, 118 → 42 m
+# Half levels above ground, as DWD's measured: full 117 → 165 m, 118 → 95.5 m, 119 → 42 m.
+HHL_AGL = {117: 200.0, 118: 130.0, 119: 61.0, 120: 23.0}
 
 
 # Half a quantisation step (columns._QUANT), plus the float32 the remapped
@@ -360,20 +361,45 @@ def test_a_build_publishes_the_columns_in_app_units(tmp_path):
     assert _value(d, columns.HSURF, STATIC, 0) == pytest.approx(HSURF_M, abs=TOL_1)
 
 
-def test_t80_is_interpolated_in_height_between_the_two_model_levels(tmp_path):
+def test_t80_is_interpolated_in_height_between_the_two_levels_around_80_m(tmp_path):
     steps = [0, 1]
     deps, _ = _deps_with_columns(tmp_path, steps)
     _columns_build(tmp_path, deps, steps)
     m = json.loads((tmp_path / "site" / "manifest.json").read_text())
     d = decode_columns((tmp_path / "site" / m["columns"]["tiles"] / "N40W125.icc").read_bytes())
-    upper, lower = sorted(COLUMN_MLEVELS)
-    z_up = (HHL_AGL[upper] + HHL_AGL[upper + 1]) / 2
-    z_lo = (HHL_AGL[lower] + HHL_AGL[lower + 1]) / 2
+    full = {lv: (HHL_AGL[lv] + HHL_AGL[lv + 1]) / 2 for lv in COLUMN_MLEVELS}
+    up = max(lv for lv in COLUMN_MLEVELS if full[lv] >= 80)          # the lowest level at or above 80 m
+    lo = up + 1
+    assert full[lo] < 80 <= full[up]
     for s in steps:
-        t_up = _column_value(f"x_model-level_2026092700_{s:03d}_{upper}_T.g")[1]
-        t_lo = _column_value(f"x_model-level_2026092700_{s:03d}_{lower}_T.g")[1]
-        want = t_lo + (t_up - t_lo) * (80 - z_lo) / (z_up - z_lo) - 273.15
+        t_up = _column_value(f"x_model-level_2026092700_{s:03d}_{up}_T.g")[1]
+        t_lo = _column_value(f"x_model-level_2026092700_{s:03d}_{lo}_T.g")[1]
+        want = t_lo + (t_up - t_lo) * (80 - full[lo]) / (full[up] - full[lo]) - 273.15
         assert _value(d, columns.T, columns.HEIGHT_AGL_M, 80, s=s) == pytest.approx(want, abs=TOL_T)
+
+
+def test_t80_weights_pick_the_bracketing_pair_per_node_and_never_extrapolate():
+    # Four nodes: 80 m between 118 and 119; between 117 and 118 (118 low over
+    # steep ground); above all three (clamped to 117); a missing height.
+    levels = sorted(COLUMN_MLEVELS)
+    full = np.array([[165.0, 95.5, 42.0], [120.0, 70.0, 35.0], [78.0, 60.0, 30.0], [np.nan, 90.0, 40.0]])
+    hsurf = np.array([500.0, 0.0, 2000.0, 10.0])
+    # Half levels whose midpoints are `full` (the lowest half level on the ground).
+    half = {levels[-1] + 1: hsurf.copy()}
+    for i, lv in reversed(list(enumerate(levels))):
+        half[lv] = 2 * (full[:, i] + hsurf) - half[lv + 1]
+    w = run_build.t80_weights(half, hsurf)
+    assert sorted(w) == levels
+    for node in range(3):
+        t = {lv: 280.0 - 0.01 * full[node, i] for i, lv in enumerate(levels)}       # linear in height
+        assert sum(w[lv][node] for lv in levels) == pytest.approx(1.0)
+        assert all(0.0 <= w[lv][node] <= 1.0 for lv in levels)
+        got = sum(w[lv][node] * t[lv] for lv in levels)
+        z = full[node]
+        want = 280.0 - 0.01 * (80.0 if z.min() <= 80 <= z.max() else z.min() if 80 < z.min() else z.max())
+        assert got == pytest.approx(want)
+    assert w[levels[0]][2] == 1.0                                    # clamped to the top level
+    assert all(np.isnan(w[lv][3]) for lv in levels)
 
 
 def test_a_full_build_publishes_columns_for_every_square(tmp_path):

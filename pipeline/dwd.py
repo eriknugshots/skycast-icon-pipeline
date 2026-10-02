@@ -83,11 +83,13 @@ COLUMN_PLEVELS = [1000, 950, 925, 900, 850, 800, 700]
 COLUMN_PFIELDS = ["T", "RELHUM", "FI"]              # per pressure level
 COLUMN_SFIELDS = ["T_2M", "RELHUM_2M"]              # single level, per step
 # No 80 m field exists in ICON open data; T at 80 m above ground is
-# interpolated in height between these two model levels (full levels; 120 is
-# the lowest) with the time-invariant HHL (half-level heights). Their
-# heights above ground were measured on DWD's HHL (design doc).
-COLUMN_MLEVELS = [117, 118]
-COLUMN_HHL_LEVELS = [117, 118, 119]                 # bounds of full levels 117 and 118
+# interpolated in height between the two of these model levels (full levels;
+# 120 is the lowest) that bracket 80 m at each node, with the time-invariant
+# HHL (half-level heights). Measured on DWD's HHL (design doc): full level
+# 118 sits 50-105 m above ground (median 96), 119 at 30-46 m, 117 at 74-185 m
+# — so 118/119 bracket 80 m almost everywhere and 117/118 where 118 is lower.
+COLUMN_MLEVELS = [117, 118, 119]
+COLUMN_HHL_LEVELS = [117, 118, 119, 120]            # bounds of those full levels
 
 
 def pressure_file_name(run, step, level, field):

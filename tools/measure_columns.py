@@ -8,6 +8,7 @@ import argparse
 import os
 import sys
 import time
+import zlib
 from pathlib import Path
 
 import netCDF4
@@ -104,8 +105,12 @@ def main():
         p = np.nanpercentile(z, [1, 50, 99])
         out(f"| {lv} | {p[0]:.1f} | {p[1]:.1f} | {p[2]:.1f} | {np.nanmin(z):.1f} | {np.nanmax(z):.1f} |", summary)
     w = run_build.t80_weights({lv: hhl[lv] for lv in dwd.COLUMN_HHL_LEVELS}, hs)
-    out(f"T80 weight of level {min(dwd.COLUMN_MLEVELS)}: p0 {np.nanmin(w):.3f} p50 {np.nanmedian(w):.3f} "
-        f"p100 {np.nanmax(w):.3f} (0..1 = interpolation, outside = extrapolation)", summary)
+    top, bottom = min(dwd.COLUMN_MLEVELS), max(dwd.COLUMN_MLEVELS)
+    n = np.isfinite(w[top]).sum()
+    z_top = (hhl[top] + hhl[top + 1]) / 2 - hhl[121]
+    out(f"T80 pairs over {n} nodes: {(w[top] > 0).sum() / n:.2%} use level {top} (80 m above level "
+        f"{bottom - 1}), {(z_top < 80).sum() / n:.3%} have every level below 80 m (clamped to {top}), "
+        f"{(~np.isfinite(w[top])).sum()} missing", summary)
     del hs, hhl, w
     out(f"statics probe: {time.monotonic() - t0:.0f} s", summary)
 
@@ -130,7 +135,7 @@ def main():
             t0 = time.monotonic()
             site = Path(a.out) / f"site_{stride}_{len(stacks)}"
             total = run_build.write_columns(site, run, names, stride, st,
-                                            [(h, c[:, ::k, ::k]) for h, c in stacks])
+                                            [(h, c[:, ::k, ::k]) for h, c in stacks], a.workers)
             enc_s = time.monotonic() - t0
             sizes = sorted(p.stat().st_size for p in (site / run_build.site_columns_tiles(run)).glob("*.icc"))
             head = Path(a.out) / f"head_{stride}"
@@ -140,6 +145,20 @@ def main():
             out(f"| {columns.spacing_deg(stride)}° | {columns.side(stride)} | {len(stacks)} ({label}) | "
                 f"{total / 1e6:.1f} | {sizes[0] / 1e3:.1f} / {sizes[len(sizes) // 2] / 1e3:.1f} / "
                 f"{sizes[-1] / 1e3:.1f} | {enc_s:.0f} | {head_mb:.1f} |", summary)
+
+    # Where a square's bytes go: each kind's codes compressed on their own
+    # (N40W125, run + history), so the size is not a mystery.
+    for stride in strides:
+        site = Path(a.out) / f"site_{stride}_{len(replay) + len(own)}"
+        d = columns.decode_columns((site / run_build.site_columns_tiles(run) / "N40W125.icc").read_bytes())
+        parts = {}
+        for f, codes in zip(d["spec"], d["fields"]):
+            key = f"{columns.KIND_NAMES[f[0]]}{'' if f[1] == columns.PRESSURE_HPA else f'@{f[2]}'}"
+            parts.setdefault(key, []).append(codes.reshape(-1))
+        sizes = {k: len(zlib.compress(columns._planes(np.concatenate(v)), columns.ZLIB_LEVEL))
+                 for k, v in parts.items()}
+        out(f"N40W125 at {columns.spacing_deg(stride)}°, bytes by field: "
+            + ", ".join(f"{k} {v / 1e3:.1f} KB" for k, v in sizes.items()), summary)
 
     # One decoded column: Bend, OR (44.06 N, 121.31 W), nearest node at the
     # coarsest stride, first step — units must read as the app's.

@@ -369,7 +369,11 @@ def fetch_columns(deps, kit, work, run, steps, workers, stride):
         for (s, g), fut in zip(jobs, futs):
             got[s].update(fut.result())
     base = history.hour_of(run)
-    return static, [(base + s, np.stack([got.pop(s)[k] for k in keys])) for s in steps]
+    own = []
+    for s in steps:
+        fields = got.pop(s)
+        own.append((base + s, np.stack([fields[k] for k in keys])))
+    return static, own
 
 
 def write_columns(site_dir, run, names, stride, static, stacks):

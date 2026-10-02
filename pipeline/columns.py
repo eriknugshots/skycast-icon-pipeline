@@ -23,7 +23,7 @@ import struct
 import zlib
 import numpy as np
 
-from .squares import SQUARE_DEG, DEG, SIDE, row_indices, col_indices
+from .squares import DEG, SIDE, row_indices, col_indices
 
 MAGIC = b"ICC1"
 MISSING = 0xFFFF

@@ -338,7 +338,7 @@ def test_a_build_publishes_the_columns_in_app_units(tmp_path):
     steps = [0, 1, 2]
     deps, calls = _deps_with_columns(tmp_path, steps)
     assert _columns_build(tmp_path, deps, steps) == run_build.BUILT
-    m = json.loads((tmp_path / "site" / "manifest.json").read_text())
+    m = json.loads((tmp_path / "blob" / "manifest.json").read_text())
     col = m["columns"]
     base = hour_of(RUN)
     assert col["format"] == "ICC1" and col["run"] == "2026-09-27T00Z"
@@ -347,7 +347,7 @@ def test_a_build_publishes_the_columns_in_app_units(tmp_path):
     assert col["historySteps"] == 0
     assert col["spacing"] == run_build.COLUMN_STRIDE * 0.125
     assert col["side"] == 40 // run_build.COLUMN_STRIDE + 1
-    d = decode_columns((tmp_path / "site" / col["tiles"] / "N40W125.icc").read_bytes())
+    d = decode_columns((tmp_path / "blob" / col["tiles"] / "N40W125.icc").read_bytes())
     assert d["step_hours"] == [base + s for s in steps]
     assert (d["rows"], d["cols"]) == (col["side"], col["side"])
     P, H = columns.PRESSURE_HPA, columns.HEIGHT_AGL_M
@@ -365,8 +365,8 @@ def test_t80_is_interpolated_in_height_between_the_two_levels_around_80_m(tmp_pa
     steps = [0, 1]
     deps, _ = _deps_with_columns(tmp_path, steps)
     _columns_build(tmp_path, deps, steps)
-    m = json.loads((tmp_path / "site" / "manifest.json").read_text())
-    d = decode_columns((tmp_path / "site" / m["columns"]["tiles"] / "N40W125.icc").read_bytes())
+    m = json.loads((tmp_path / "blob" / "manifest.json").read_text())
+    d = decode_columns((tmp_path / "blob" / m["columns"]["tiles"] / "N40W125.icc").read_bytes())
     full = {lv: (HHL_AGL[lv] + HHL_AGL[lv + 1]) / 2 for lv in COLUMN_MLEVELS}
     up = max(lv for lv in COLUMN_MLEVELS if full[lv] >= 80)          # the lowest level at or above 80 m
     lo = up + 1
@@ -407,9 +407,9 @@ def test_a_full_build_publishes_columns_for_every_square(tmp_path):
     rc = run_build.build(site=tmp_path / "site", state=tmp_path / "state", work=tmp_path / "work",
                          deps=deps, pages_base=None, steps=None, squares=None, workers=4)
     assert rc == run_build.BUILT
-    m = json.loads((tmp_path / "site" / "manifest.json").read_text())
+    m = json.loads((tmp_path / "blob" / "manifest.json").read_text())
     assert m["complete"] is True and m["columns"] is not None
-    got = sorted(p.stem for p in (tmp_path / "site" / m["columns"]["tiles"]).glob("*.icc"))
+    got = sorted(p.stem for p in (tmp_path / "blob" / m["columns"]["tiles"]).glob("*.icc"))
     assert got == sorted(NINE) == m["squares"]
     assert len(m["columns"]["stepsMs"]) == len(STEPS)
 
@@ -418,11 +418,11 @@ def test_column_files_not_yet_listed_wait_then_publish_without_columns(tmp_path,
     steps = [0, 1]
     deps, calls = _deps_with_columns(tmp_path, steps, column_steps=[0])         # step 1 never lands
     assert _columns_build(tmp_path, deps, steps) == run_build.BUILT
-    m = json.loads((tmp_path / "site" / "manifest.json").read_text())
+    m = json.loads((tmp_path / "blob" / "manifest.json").read_text())
     assert m["columns"] is None
     assert sum(calls["sleeps"]) >= run_build.COLUMN_WAIT_S
     assert (tmp_path / "site" / m["tiles"] / "N40W125.icl").exists()
-    assert not (tmp_path / "site" / "columns").exists()
+    assert not (tmp_path / "blob" / "columns").exists()
     assert "::warning::columns" in capsys.readouterr().out
 
 
@@ -435,9 +435,9 @@ def test_a_column_failure_never_fails_the_build(tmp_path, capsys):
             raise OSError("cdo died")
         return _fake_lattice_levels(paths, kit, work, stride)
     assert _columns_build(tmp_path, deps._replace(lattice_levels=broken), steps) == run_build.BUILT
-    m = json.loads((tmp_path / "site" / "manifest.json").read_text())
+    m = json.loads((tmp_path / "blob" / "manifest.json").read_text())
     assert m["columns"] is None
-    assert not (tmp_path / "site" / "columns").exists()
+    assert not (tmp_path / "blob" / "columns").exists()
     assert "::warning::columns failed" in capsys.readouterr().out
 
 
@@ -451,13 +451,13 @@ def test_column_history_comes_from_state(tmp_path):
     first, RUN = RUN, RUN + dt.timedelta(hours=6)
     try:
         deps, _ = _deps_with_columns(tmp_path, [0, 1])
-        site2 = tmp_path / "site2"
-        run_build.build(site=site2, state=tmp_path / "state", work=tmp_path / "work", deps=deps,
-                        pages_base="https://x", steps=[0, 1], squares=["N40W125"], workers=2)
-        m = json.loads((site2 / "manifest.json").read_text())
+        blob2 = tmp_path / "blob2"
+        run_build.build(site=tmp_path / "site2", state=tmp_path / "state", work=tmp_path / "work", deps=deps,
+                        pages_base="https://x", steps=[0, 1], squares=["N40W125"], workers=2, blob=blob2)
+        m = json.loads((blob2 / "manifest.json").read_text())
         assert m["columns"]["historySteps"] == 6
         assert m["columns"]["stepsMs"][:6] == [(hour_of(first) + s) * 3600 * 1000 for s in range(6)]
-        d = decode_columns((site2 / m["columns"]["tiles"] / "N40W125.icc").read_bytes())
+        d = decode_columns((blob2 / m["columns"]["tiles"] / "N40W125.icc").read_bytes())
         # History hour s is the first run's step s: T_2M = 283.15 + s K.
         for s in range(6):
             assert _value(d, columns.T, columns.HEIGHT_AGL_M, 2, s=s) == pytest.approx(283.15 + s - 273.15, abs=TOL_T)
@@ -465,29 +465,25 @@ def test_column_history_comes_from_state(tmp_path):
         RUN = first
 
 
-def test_the_budget_counts_the_columns_and_drops_them_last(tmp_path, monkeypatch, capsys):
+def test_the_columns_go_to_blob_only_and_never_touch_the_pages_budget(tmp_path, monkeypatch, capsys):
     steps = [0, 1]
     deps, _ = _deps_with_columns(tmp_path, steps)
     _columns_build(tmp_path / "a", deps, steps)
-    a = tmp_path / "a" / "site"
-    clouds = run_build._dir_bytes(a / "tiles")
-    cols = run_build._dir_bytes(a / "columns")
-    assert cols > 0
-    # A budget the clouds fit but clouds + columns do not: clouds go to 4 %
-    # steps first; if that is not enough, the columns are left out.
-    monkeypatch.setattr(run_build, "SITE_BUDGET_BYTES", clouds + cols - 1)
+    site, blob = tmp_path / "a" / "site", tmp_path / "a" / "blob"
+    pages = json.loads((site / "manifest.json").read_text())
+    feed = json.loads((blob / "manifest.json").read_text())
+    # Pages: clouds and tail only, and a manifest that names no columns.
+    assert not (site / "columns").exists() and pages["columns"] is None
+    # Blob: the columns, and a manifest equal to Pages' but for its columns key.
+    assert run_build._dir_bytes(blob / feed["columns"]["tiles"]) > 0
+    assert {k: v for k, v in feed.items() if k != "columns"} == {k: v for k, v in pages.items() if k != "columns"}
+    assert sorted(p.relative_to(blob).parts[0] for p in blob.iterdir()) == ["columns", "manifest.json"]
+    clouds = run_build._dir_bytes(site / "tiles")
+    capsys.readouterr()
+    # A budget the clouds just fit: however big the columns, the squares stay in 2 % steps.
+    monkeypatch.setattr(run_build, "SITE_BUDGET_BYTES", clouds)
     _columns_build(tmp_path / "b", deps, steps)
-    b = tmp_path / "b" / "site"
     out = capsys.readouterr().out
-    m = json.loads((b / "manifest.json").read_text())
-    assert f"{run_build.QUANT_FALLBACK_STEP} % steps" in out
-    if run_build._dir_bytes(b / "tiles") + cols > clouds + cols - 1:
-        assert m["columns"] is None and not (b / "columns").exists()
-    else:
-        assert m["columns"] is not None
-    # A budget nothing fits: the columns go, the clouds stay.
-    monkeypatch.setattr(run_build, "SITE_BUDGET_BYTES", 1)
-    _columns_build(tmp_path / "c", deps, steps)
-    m = json.loads((tmp_path / "c" / "site" / "manifest.json").read_text())
-    assert m["columns"] is None and (tmp_path / "c" / "site" / m["tiles"] / "N40W125.icl").exists()
-    assert "leaving the columns out" in capsys.readouterr().out
+    assert "budget" not in out
+    assert run_build._dir_bytes(tmp_path / "b" / "site" / "tiles") == clouds
+    assert json.loads((tmp_path / "b" / "blob" / "manifest.json").read_text())["columns"] is not None

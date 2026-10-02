@@ -11,11 +11,17 @@
 // previous manifest's is deleted (prune.mjs): a phone that read the old
 // manifest a moment ago is still fetching its squares.
 //
-// Usage: BLOB_READ_WRITE_TOKEN=… node publish/blob.mjs <siteDir>
+// Several roots may be given: `node blob.mjs ../site ../blob` uploads site/
+// (what Pages carries too) and then blob/ (Blob only: the column feed and the
+// manifest that names it); a later root's file replaces the same path in an
+// earlier one (roots.mjs), so the manifest that goes up is blob/'s.
+//
+// Usage: BLOB_READ_WRITE_TOKEN=… node publish/blob.mjs <siteDir> [<moreDir> …]
 import { readdir, readFile } from 'node:fs/promises';
 import { join, relative, sep } from 'node:path';
 import { put, list, del } from '@vercel/blob';
 import { pathsToDelete } from './prune.mjs';
+import { planRoots } from './roots.mjs';
 
 const YEAR_S = 365 * 24 * 3600;
 const MANIFEST_S = 60;            // Blob's shortest cache time
@@ -69,29 +75,36 @@ async function previousManifest(blobs) {
 }
 
 async function main() {
-  const siteDir = process.argv[2];
-  if (!siteDir) throw new Error('usage: node publish/blob.mjs <siteDir>');
+  const dirs = process.argv.slice(2);
+  if (!dirs.length) throw new Error('usage: node publish/blob.mjs <siteDir> [<moreDir> …]');
   if (!process.env.BLOB_READ_WRITE_TOKEN) throw new Error('BLOB_READ_WRITE_TOKEN is not set');
-  const current = JSON.parse(await readFile(join(siteDir, 'manifest.json'), 'utf8'));
+  const roots = [];
+  for (const dir of dirs) {
+    roots.push({ dir, paths: (await walk(dir)).map((p) => relative(dir, p).split(sep).join('/')) });
+  }
+  const { files, manifestDir } = planRoots(roots);
+  if (!manifestDir) throw new Error(`no manifest.json in ${dirs.join(', ')}`);
+  const current = JSON.parse(await readFile(join(manifestDir, 'manifest.json'), 'utf8'));
   const before = await listAll();
   const previous = await previousManifest(before);
 
-  const files = (await walk(siteDir))
-    .map((p) => relative(siteDir, p).split(sep).join('/'))
-    .filter((p) => p !== 'manifest.json' && !p.startsWith('.git/'));
   const t0 = Date.now();
-  let bytes = 0;
-  await pool(files, CONCURRENCY, async (path) => {
-    const body = await readFile(join(siteDir, path));
-    bytes += body.length;
+  const bytesByDir = Object.fromEntries(dirs.map((d) => [d, 0]));
+  const countByDir = Object.fromEntries(dirs.map((d) => [d, 0]));
+  await pool(files, CONCURRENCY, async ({ path, dir }) => {
+    const body = await readFile(join(dir, path));
+    bytesByDir[dir] += body.length;
+    countByDir[dir] += 1;
     await retry(path, () => put(path, body, {
       access: 'public', addRandomSuffix: false, allowOverwrite: true,
       cacheControlMaxAge: YEAR_S, contentType: 'application/octet-stream',
     }));
   });
-  console.log(`uploaded ${files.length} files, ${(bytes / 1e6).toFixed(0)} MB in ${((Date.now() - t0) / 1000).toFixed(0)} s`);
+  const bytes = Object.values(bytesByDir).reduce((a, b) => a + b, 0);
+  console.log(`uploaded ${files.length} files, ${(bytes / 1e6).toFixed(0)} MB in ${((Date.now() - t0) / 1000).toFixed(0)} s (`
+    + dirs.map((d) => `${d}: ${countByDir[d]} files, ${(bytesByDir[d] / 1e6).toFixed(0)} MB`).join('; ') + ')');
 
-  await retry('manifest.json', async () => put('manifest.json', await readFile(join(siteDir, 'manifest.json')), {
+  await retry('manifest.json', async () => put('manifest.json', await readFile(join(manifestDir, 'manifest.json')), {
     access: 'public', addRandomSuffix: false, allowOverwrite: true,
     cacheControlMaxAge: MANIFEST_S, contentType: 'application/json',
   }));

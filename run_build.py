@@ -66,7 +66,12 @@ def live_complete_run(deps, pages_base):
     return live.live_complete_run(deps.fetch_text, pages_base)
 
 
-def build(site, state, work, deps, pages_base, steps=None, squares=None, workers=None):
+def build(site, state, work, deps, pages_base, steps=None, squares=None, workers=None, blob=None):
+    """site: the Pages tree (squares, tail, manifest). blob: files for Vercel
+    Blob only — the column feed and a manifest that names it (default: a
+    `blob` directory beside `site`). publish/blob.mjs uploads site, then
+    blob over it; Pages never sees blob, so the columns never count against
+    its 1 GB."""
     run = dwd.newest_complete_run(deps.listing)
     if run is None:
         print("no complete run on DWD yet")
@@ -77,6 +82,7 @@ def build(site, state, work, deps, pages_base, steps=None, squares=None, workers
         return NOTHING_TO_DO
     steps = list(steps) if steps is not None else dwd.STEPS
     site, state, work = Path(site), Path(state), Path(work)
+    blob = Path(blob) if blob is not None else site.parent / "blob"
     work.mkdir(parents=True, exist_ok=True)
     kit = deps.ensure_kit(work)
     if squares is not None:
@@ -139,25 +145,24 @@ def build(site, state, work, deps, pages_base, steps=None, squares=None, workers
         history.save_run_head(state, run, head)
         history.prune(state, dwd.run_id(run))
 
-    world.clear()                        # the stacks hold copies; ~1.5 GB back for the columns
+    world.clear()                        # the stacks hold copies
     size = write_squares(QUANT_STEP)
     tail = build_tail(site, work, deps, kit, names, workers) if full else None
-    cols = build_columns(site, state, work, deps, kit, run, steps, names, workers)
-    site_bytes = size + _dir_bytes(site / site_tail_tiles_root()) + _dir_bytes(site / site_columns_root())
+    # The Pages budget is the clouds' and the tail's alone: the columns go to
+    # Blob only (Erik, 2026-10-02: cloud accuracy first).
+    site_bytes = size + _dir_bytes(site / site_tail_tiles_root())
     if site_bytes > SITE_BUDGET_BYTES:
         print(f"::warning::{site_bytes / 1e6:.0f} MB is over the {SITE_BUDGET_BYTES / 1e6:.0f} MB budget: "
               f"rewriting the squares in {QUANT_FALLBACK_STEP} % steps")
         size = write_squares(QUANT_FALLBACK_STEP)
-        site_bytes = size + _dir_bytes(site / site_tail_tiles_root()) + _dir_bytes(site / site_columns_root())
-    if site_bytes > SITE_BUDGET_BYTES and cols is not None:
-        # Still over: the clouds are the feed, the fog columns an extra. Pages
-        # refuses a site over 1 GB outright, which would freeze every build.
-        print(f"::warning::{site_bytes / 1e6:.0f} MB is still over the budget: leaving the columns out")
-        shutil.rmtree(site / site_columns_root(), ignore_errors=True)
-        cols = None
         site_bytes = size + _dir_bytes(site / site_tail_tiles_root())
-    print(f"site: {site_bytes / 1e6:.0f} MB in squares, tail and columns")
-    (site / "manifest.json").write_text(site_manifest(run, deps.now(), hours, names, len(past), full, tail, cols))
+    print(f"site: {site_bytes / 1e6:.0f} MB in squares and tail")
+    stacks.clear()                       # ~2.5 GB back before the columns
+    # Pages carries no columns, so its manifest names none.
+    (site / "manifest.json").write_text(site_manifest(run, deps.now(), hours, names, len(past), full, tail, None))
+    cols = build_columns(blob, state, work, deps, kit, run, steps, names, workers)
+    blob.mkdir(parents=True, exist_ok=True)
+    (blob / "manifest.json").write_text(site_manifest(run, deps.now(), hours, names, len(past), full, tail, cols))
     print(f"built {len(names)} squares, {len(hours)} steps ({len(past)} history)")
     return BUILT
 
@@ -411,12 +416,12 @@ def fetch_columns(deps, kit, work, run, steps, workers, stride):
     return static, own
 
 
-def write_columns(site_dir, run, names, stride, static, stacks, workers=1):
+def write_columns(blob_dir, run, names, stride, static, stacks, workers=1):
     """One .icc per square under columns/<run>/; returns the bytes written.
     zlib releases the GIL, so squares encode in parallel threads."""
     spec = column_spec()
     hours = [h for h, _ in stacks]
-    tiles = Path(site_dir) / site_columns_tiles(run)
+    tiles = Path(blob_dir) / site_columns_tiles(run)
     tiles.mkdir(parents=True, exist_ok=True)
 
     def one(name):
@@ -431,7 +436,7 @@ def write_columns(site_dir, run, names, stride, static, stacks, workers=1):
         return sum(pool.map(one, names))
 
 
-def build_columns(site_dir, state, work, deps, kit, run, steps, names, workers, stride=None):
+def build_columns(blob_dir, state, work, deps, kit, run, steps, names, workers, stride=None):
     """The column feed: per square, every column field at every step (history
     first), one .icc under columns/<run>/. Returns the manifest's `columns`
     entry, or None; a failure here never fails the build — the app keeps its
@@ -452,10 +457,10 @@ def build_columns(site_dir, state, work, deps, kit, run, steps, names, workers, 
             history.save_run_head(state, run, np.stack([by_hour[base + s] for s in head_steps]),
                                   sub="columns", dtype=np.uint16)
             history.prune(state, dwd.run_id(run), sub="columns")
-        total = write_columns(site_dir, run, names, stride, static, stacks, workers)
+        total = write_columns(blob_dir, run, names, stride, static, stacks, workers)
     except Exception as e:
         print(f"::warning::columns failed: {type(e).__name__}: {e}")
-        shutil.rmtree(Path(site_dir) / site_columns_root(), ignore_errors=True)
+        shutil.rmtree(Path(blob_dir) / site_columns_root(), ignore_errors=True)
         return None
     print(f"columns: {len(names)} squares, {len(hours)} steps ({len(past)} history), "
           f"{total / 1e6:.1f} MB, {time.monotonic() - t0:.0f} s (worker-seconds: "
@@ -469,6 +474,7 @@ def build_columns(site_dir, state, work, deps, kit, run, steps, names, workers, 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--site-dir", default="site")
+    ap.add_argument("--blob-dir", default="blob", help="files for Vercel Blob only (the column feed)")
     ap.add_argument("--state-dir", default="state")
     ap.add_argument("--work-dir", default="work")
     ap.add_argument("--pages-base", default=None)
@@ -477,7 +483,7 @@ def main():
     a = ap.parse_args()
     steps = [int(s) for s in a.steps.split(",")] if a.steps else None
     squares = a.squares.split(",") if a.squares else None
-    sys.exit(build(a.site_dir, a.state_dir, a.work_dir, REAL, a.pages_base, steps, squares))
+    sys.exit(build(a.site_dir, a.state_dir, a.work_dir, REAL, a.pages_base, steps, squares, blob=a.blob_dir))
 
 
 if __name__ == "__main__":

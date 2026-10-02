@@ -41,8 +41,9 @@ def build_manifest(run, built, step_hours, squares, history_hours, complete=True
         "tail": tail,
         # The column feed (fog and inversion profiles, ICC1 — see
         # docs/column-feed-design.md): {format, run, runMs, stepsMs,
-        # historySteps, spacing, side, squares, tiles}, or None. Builds that
-        # predate it never read this key.
+        # historySteps, spacing, side, tiles}, or None. Only the Vercel Blob
+        # copy of the manifest names it — the columns are not on Pages.
+        # Builds that predate it never read this key.
         "columns": columns,
         "attribution": ATTRIBUTION,
     }

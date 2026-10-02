@@ -61,6 +61,7 @@ jobs:
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
           if [ "$rc" = "3" ]; then echo "nothing to do"; elif [ "$rc" != "0" ]; then exit "$rc"; fi
           du -sh site 2>/dev/null || true
+          du -sh blob 2>/dev/null || true
           du -sh state 2>/dev/null || true
       - name: publish site (orphan force-push to gh-pages)
         if: steps.build.outputs.rc == '0'
@@ -75,6 +76,8 @@ jobs:
       - uses: actions/setup-node@v4
         if: steps.build.outputs.rc == '0' && !inputs.steps && !inputs.squares
         with: { node-version: "22" }
+      # site/ and then blob/ (the column feed, Blob only — never on Pages, never
+      # in its 1 GB budget; blob/manifest.json is site's plus the columns key).
       - name: publish to Vercel Blob (the app's feed; Pages above stays for older builds) — full builds only
         if: steps.build.outputs.rc == '0' && !inputs.steps && !inputs.squares
         continue-on-error: true
@@ -84,7 +87,7 @@ jobs:
           cd publish
           npm ci --no-audit --no-fund
           node --test
-          node blob.mjs ../site
+          node blob.mjs ../site ../blob
       - name: publish state (orphan force-push to state) — full builds only
         if: steps.build.outputs.rc == '0' && !inputs.steps
         run: |

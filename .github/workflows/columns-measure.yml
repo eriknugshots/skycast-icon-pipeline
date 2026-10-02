@@ -1,0 +1,33 @@
+name: columns-measure
+# Measures the column feed on REAL DWD data without publishing anything:
+# no secrets, read-only token, no Pages/Blob/state step. The cloud session
+# that wrote the column feed could not reach opendata.dwd.de, so the probe
+# (what DWD lists) and the sizes in docs/column-feed-design.md come from here.
+on:
+  push:
+    branches: [cloud/column-feed]
+    paths: [".github/workflows/columns-measure.yml", "tools/**"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: columns-measure
+  cancel-in-progress: true
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: what DWD lists for the column fields
+        run: |
+          B=https://opendata.dwd.de/weather/nwp/icon/grib/00
+          for d in t relhum fi t_2m relhum_2m t_g hhl hsurf; do
+            curl -fsS "$B/$d/" > "ls_$d.html" || { echo "== $d: no listing"; continue; }
+            n=$(grep -o 'icon_global_icosahedral_[^"<>]*\.grib2\.bz2' "ls_$d.html" | sort -u | wc -l)
+            echo "== $d: $n files"
+            grep -o 'icon_global_icosahedral_[^"<>]*\.grib2\.bz2' "ls_$d.html" | sort -u \
+              | sed -E 's/_[0-9]{10}_/_RUN_/; s/_RUN_[0-9]{3}_/_RUN_SSS_/' | sort | uniq -c | sort -k2 | head -200
+            grep -o 'icon_global_icosahedral_[a-z-]*_[0-9]{10}_[0-9]{3}' "ls_$d.html" -E | sed -E 's/.*_//' | sort -u | tr '\n' ' ' | head -c 2000; echo
+            grep -E -o '[0-9]{2}-[A-Za-z]{3}-[0-9]{4} [0-9:]+ +[0-9]+' "ls_$d.html" | awk '{s+=$3; n++} END {if (n) printf "  bytes: %d files, mean %.2f MB\n", n, s/n/1e6}'
+          done

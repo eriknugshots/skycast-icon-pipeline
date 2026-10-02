@@ -4,7 +4,7 @@ import numpy as np
 from pathlib import Path
 from pipeline.dwd import STEPS, FIELDS, TAIL_STEPS, file_name
 from pipeline.encode import decode_square
-from pipeline.history import save_run_head, hour_of
+from pipeline.history import save_run_head, hour_of, HEAD_STEPS
 from pipeline.squares import NX, NY
 import pytest
 import run_build
@@ -445,7 +445,7 @@ def test_column_history_comes_from_state(tmp_path):
     steps = list(range(6))
     deps, _ = _deps_with_columns(tmp_path, steps)
     _columns_build(tmp_path, deps, steps)
-    assert (tmp_path / "state" / "columns" / "2026092700.npz").exists()
+    assert len(list((tmp_path / "state" / "columns").glob("2026092700.h*.npz"))) == HEAD_STEPS
     # The next run, six hours on, reads those six hours as history.
     global RUN
     first, RUN = RUN, RUN + dt.timedelta(hours=6)

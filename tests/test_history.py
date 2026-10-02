@@ -65,3 +65,24 @@ def test_the_column_history_is_its_own_u16_store_beside_the_clouds(tmp_path):
     assert load_history_steps(tmp_path, R(27, 6), sub="columns", shape=(24, 6, 10)) == []
     prune(tmp_path, "2026092700", sub="columns")
     assert run_file(tmp_path, R(27, 0)).exists()
+
+
+def test_a_split_head_is_one_file_per_hour_and_reads_and_prunes_like_one(tmp_path):
+    from pipeline.history import prune, run_files, HEAD_STEPS
+    cols = np.arange(6 * 2 * 3 * 5, dtype=np.uint16).reshape(6, 2, 3, 5)
+    save_run_head(tmp_path, R(27, 0), cols, sub="columns", dtype=np.uint16, split=True)
+    files = run_files(tmp_path, R(27, 0), "columns")
+    assert [p.name for p in files] == [f"2026092700.h{i}.npz" for i in range(HEAD_STEPS)]
+    got = load_history_steps(tmp_path, R(27, 6), sub="columns", shape=(2, 3, 5))
+    assert [h for h, _ in got] == [hour_of(R(27, 0)) + i for i in range(HEAD_STEPS)]
+    assert all(np.array_equal(a, cols[i]) for i, (_, a) in enumerate(got))
+    # Saving the run again replaces its files; prune counts runs, not files.
+    save_run_head(tmp_path, R(27, 0), cols, sub="columns", dtype=np.uint16, split=True)
+    assert len(run_files(tmp_path, R(27, 0), "columns")) == HEAD_STEPS
+    for k in range(1, KEEP_RUNS + 2):
+        save_run_head(tmp_path, R(27, 0) + dt.timedelta(hours=6 * k), cols, sub="columns", dtype=np.uint16, split=True)
+    newest = R(27, 0) + dt.timedelta(hours=6 * (KEEP_RUNS + 1))
+    prune(tmp_path, f"{newest:%Y%m%d%H}", sub="columns")
+    left = sorted({p.stem.split(".")[0] for p in (tmp_path / "columns").glob("*.npz")})
+    assert len(left) == KEEP_RUNS and len(list((tmp_path / "columns").glob("*.npz"))) == KEEP_RUNS * HEAD_STEPS
+    assert left[-1] == f"{newest:%Y%m%d%H}"

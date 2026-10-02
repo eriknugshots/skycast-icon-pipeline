@@ -157,13 +157,15 @@ def build(site, state, work, deps, pages_base, steps=None, squares=None, workers
         size = write_squares(QUANT_FALLBACK_STEP)
         site_bytes = size + _dir_bytes(site / site_tail_tiles_root())
     print(f"site: {site_bytes / 1e6:.0f} MB in squares and tail")
-    stacks.clear()                       # ~2.5 GB back before the columns
+    n_past = len(past)
+    stacks.clear()                       # ~2.5 GB of cloud arrays back before the columns
+    past.clear()
     # Pages carries no columns, so its manifest names none.
-    (site / "manifest.json").write_text(site_manifest(run, deps.now(), hours, names, len(past), full, tail, None))
+    (site / "manifest.json").write_text(site_manifest(run, deps.now(), hours, names, n_past, full, tail, None))
     cols = build_columns(blob, state, work, deps, kit, run, steps, names, workers)
     blob.mkdir(parents=True, exist_ok=True)
-    (blob / "manifest.json").write_text(site_manifest(run, deps.now(), hours, names, len(past), full, tail, cols))
-    print(f"built {len(names)} squares, {len(hours)} steps ({len(past)} history)")
+    (blob / "manifest.json").write_text(site_manifest(run, deps.now(), hours, names, n_past, full, tail, cols))
+    print(f"built {len(names)} squares, {len(hours)} steps ({n_past} history)")
     return BUILT
 
 
@@ -241,8 +243,12 @@ def build_tail(site_dir, work, deps, kit, names, workers):
 
 
 # ---- The column feed (docs/column-feed-design.md) ---------------------------
-# Every COLUMN_STRIDE-th node of the 0.125° grid: 4 → 0.5°, 11 nodes a side.
-COLUMN_STRIDE = 4
+# Every COLUMN_STRIDE-th node of the 0.125° grid: 2 → 0.25°, 21 nodes a side.
+# Chosen on measured interpolation error near the ground (design doc, "Node
+# spacing"): on steep ground 0.5° nodes miss T 2 m by 3.9 °C at p95 and the
+# T80 − T2m inversion signal by 2.1 °C, 0.25° by 2.9 and 1.7. 0.125° itself
+# would need ~30 GB of memory for 153 hours on a 16 GB runner.
+COLUMN_STRIDE = 2
 # DWD lists a run's fields over ~20 minutes; the cloud fields that start a
 # build are not the column fields. Wait this long for the rest, then publish
 # the clouds without columns rather than hold the feed back.
@@ -455,7 +461,7 @@ def build_columns(blob_dir, state, work, deps, kit, run, steps, names, workers, 
         if len(head_steps) == history.HEAD_STEPS:
             by_hour = dict(own)
             history.save_run_head(state, run, np.stack([by_hour[base + s] for s in head_steps]),
-                                  sub="columns", dtype=np.uint16)
+                                  sub="columns", dtype=np.uint16, split=True)
             history.prune(state, dwd.run_id(run), sub="columns")
         total = write_columns(blob_dir, run, names, stride, static, stacks, workers)
     except Exception as e:

@@ -36,13 +36,28 @@ def run_file(state, run, sub="history"):
     return history_dir(state, sub) / f"{run:%Y%m%d%H}.npz"
 
 
-def save_run_head(state, run, head, sub="history", dtype=np.uint8):
+def run_files(state, run, sub="history"):
+    """Every file holding `run`'s head: <run>.npz, or <run>.h<i>.npz when split."""
+    d = history_dir(state, sub)
+    return sorted(d.glob(f"{run:%Y%m%d%H}.npz")) + sorted(d.glob(f"{run:%Y%m%d%H}.h*.npz"))
+
+
+def save_run_head(state, run, head, sub="history", dtype=np.uint8, split=False):
     """head: [6][fields][rows][cols] — the run's hours 0-5. For the clouds
-    uint8 [6][4][NY][NX], fields low/mid/high/total."""
+    uint8 [6][4][NY][NX], fields low/mid/high/total. split: one file per
+    hour (<run>.h0.npz … h5) — the column head at 0.25° is ~94 MB in one
+    file, near GitHub's 100 MB limit on a pushed file; split, ~16 MB each."""
     if head.shape[0] != HEAD_STEPS:
         raise ValueError(f"head must hold {HEAD_STEPS} steps, got {head.shape[0]}")
     history_dir(state, sub).mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(run_file(state, run, sub), head=head.astype(dtype), run_hour=hour_of(run))
+    for old in run_files(state, run, sub):
+        old.unlink()
+    if not split:
+        np.savez_compressed(run_file(state, run, sub), head=head.astype(dtype), run_hour=hour_of(run))
+        return
+    for i in range(HEAD_STEPS):
+        np.savez_compressed(history_dir(state, sub) / f"{run:%Y%m%d%H}.h{i}.npz",
+                            head=head[i:i + 1].astype(dtype), run_hour=hour_of(run) + i)
 
 
 def runs_to_keep(run_ids, current_id):
@@ -51,10 +66,14 @@ def runs_to_keep(run_ids, current_id):
     return ids[-KEEP_RUNS:]
 
 
+def _run_id(path):
+    return path.stem.split(".")[0]          # <run>.npz or <run>.h<i>.npz
+
+
 def prune(state, current_id, sub="history"):
-    keep = set(runs_to_keep([p.stem for p in history_dir(state, sub).glob("*.npz")], current_id))
+    keep = set(runs_to_keep([_run_id(p) for p in history_dir(state, sub).glob("*.npz")], current_id))
     for p in history_dir(state, sub).glob("*.npz"):
-        if p.stem not in keep:
+        if _run_id(p) not in keep:
             p.unlink()
 
 

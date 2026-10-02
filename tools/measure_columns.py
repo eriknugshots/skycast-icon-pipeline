@@ -145,8 +145,8 @@ def main():
             sizes = sorted(p.stat().st_size for p in (site / run_build.site_columns_tiles(run)).glob("*.icc"))
             head = Path(a.out) / f"head_{stride}"
             history.save_run_head(head, run, np.stack([c[:, ::k, ::k] for _, c in own[:6]]),
-                                  sub="columns", dtype=np.uint16)
-            head_mb = history.run_file(head, run, "columns").stat().st_size / 1e6
+                                  sub="columns", dtype=np.uint16, split=True)
+            head_mb = sum(p.stat().st_size for p in history.run_files(head, run, "columns")) / 1e6
             out(f"| {columns.spacing_deg(stride)}° | {columns.side(stride)} | {len(stacks)} ({label}) | "
                 f"{total / 1e6:.1f} | {sizes[0] / 1e3:.1f} / {sizes[len(sizes) // 2] / 1e3:.1f} / "
                 f"{sizes[-1] / 1e3:.1f} | {enc_s:.0f} | {head_mb:.1f} |", summary)

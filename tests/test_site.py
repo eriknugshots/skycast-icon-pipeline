@@ -46,3 +46,17 @@ def test_manifest_carries_the_tail_or_null():
     tail = {"run": "2026-09-30T00Z", "runMs": 1, "stepsMs": [2], "tiles": "tail/2026093000"}
     m = json.loads(build_manifest(run, built, [1, 2], ["N40W125"], 0, tail=tail))
     assert m["tail"] == tail
+
+
+def test_manifest_carries_the_columns_or_null_and_old_keys_are_unchanged():
+    from pipeline.site import columns_path
+    run = dt.datetime(2026, 10, 2, 0, tzinfo=UTC)
+    assert columns_path(run) == "columns/2026100200"
+    plain = json.loads(build_manifest(run, run, [1, 2], ["N40W125"], 0))
+    assert plain["columns"] is None
+    cols = {"format": "ICC1", "run": "2026-10-02T00Z", "runMs": 1, "stepsMs": [2], "historySteps": 0,
+            "spacing": 0.5, "side": 11, "tiles": "columns/2026100200"}
+    m = json.loads(build_manifest(run, run, [1, 2], ["N40W125"], 0, columns=cols))
+    assert m["columns"] == cols
+    # Everything an older app build reads is exactly what it was without columns.
+    assert {k: v for k, v in m.items() if k != "columns"} == {k: v for k, v in plain.items() if k != "columns"}

@@ -48,3 +48,20 @@ def test_load_history_ignores_hours_at_or_after_the_run_and_older_than_the_windo
 
 def test_load_history_with_no_state_is_empty(tmp_path):
     assert load_history_steps(tmp_path / "nope", R(27, 0)) == []
+
+
+def test_the_column_history_is_its_own_u16_store_beside_the_clouds(tmp_path):
+    from pipeline.history import prune, run_file
+    clouds = np.full((6, 4, 3, 5), 7, dtype=np.uint8)
+    cols = np.full((6, 24, 3, 5), 40000, dtype=np.uint16)
+    save_run_head(tmp_path, R(27, 0), clouds)
+    save_run_head(tmp_path, R(27, 0), cols, sub="columns", dtype=np.uint16)
+    assert run_file(tmp_path, R(27, 0)).exists() and run_file(tmp_path, R(27, 0), "columns").exists()
+    got = load_history_steps(tmp_path, R(27, 6), sub="columns", shape=(24, 3, 5))
+    assert [h for h, _ in got] == [hour_of(R(27, 0)) + i for i in range(6)]
+    assert got[0][1].dtype == np.uint16 and int(got[0][1].max()) == 40000
+    assert load_history_steps(tmp_path, R(27, 6))[0][1].dtype == np.uint8
+    # A head of another layout (an older stride or field list) is skipped.
+    assert load_history_steps(tmp_path, R(27, 6), sub="columns", shape=(24, 6, 10)) == []
+    prune(tmp_path, "2026092700", sub="columns")
+    assert run_file(tmp_path, R(27, 0)).exists()

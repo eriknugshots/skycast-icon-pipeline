@@ -27,3 +27,14 @@ test('keeps the manifest, the current run and the previous one; deletes older ru
 test('with no previous manifest only the current run is kept', () => {
   assert.deepEqual(pathsToDelete(['manifest.json', 'tiles/a/x.icl', 'tiles/b/x.icl'], { current: { tiles: 'tiles/b' }, previous: null }), ['tiles/a/x.icl']);
 });
+
+test('the column feed folder is kept like the tail; a null or old-style manifest has none', () => {
+  const withCols = { ...cur, columns: { tiles: 'columns/2026100200' } };
+  const prevCols = { ...prev, columns: { tiles: 'columns/2026100118' } };
+  assert.deepEqual(manifestFolders(withCols), ['tiles/2026100200/', 'tail/2026100200/', 'columns/2026100200/']);
+  assert.deepEqual(manifestFolders({ ...cur, columns: null }), manifestFolders(cur));
+  const paths = ['columns/2026100200/N40W125.icc', 'columns/2026100118/N40W125.icc', 'columns/2026100112/N40W125.icc'];
+  assert.deepEqual(pathsToDelete(paths, { current: withCols, previous: prevCols }), ['columns/2026100112/N40W125.icc']);
+  // A build that published no columns deletes the older column folders.
+  assert.deepEqual(pathsToDelete(paths, { current: cur, previous: prev }), paths);
+});

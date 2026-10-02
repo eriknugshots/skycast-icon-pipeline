@@ -89,3 +89,34 @@ def test_completeness_can_check_other_steps_and_run_hours():
         return "".join(f'<a href="{file_name(run, s, field)}">x</a>' for s in TAIL_STEPS)
     assert newest_complete_run(listing, run_hours=TAIL_RUN_HOURS, steps=TAIL_STEPS) == run
     assert newest_complete_run(listing) is None         # the near product is unaffected
+
+
+def test_column_file_names_and_urls():
+    from pipeline.dwd import (pressure_file_name, model_file_name, invariant_file_name, dir_url,
+                              COLUMN_PLEVELS, COLUMN_MLEVELS, COLUMN_HHL_LEVELS)
+    run = dt.datetime(2026, 10, 2, 6, tzinfo=dt.timezone.utc)
+    assert pressure_file_name(run, 7, 950, "RELHUM") == "icon_global_icosahedral_pressure-level_2026100206_007_950_RELHUM.grib2.bz2"
+    assert model_file_name(run, 81, 118, "T") == "icon_global_icosahedral_model-level_2026100206_081_118_T.grib2.bz2"
+    assert invariant_file_name(run, "HHL", 119) == "icon_global_icosahedral_time-invariant_2026100206_119_HHL.grib2.bz2"
+    assert invariant_file_name(run, "HSURF") == "icon_global_icosahedral_time-invariant_2026100206_HSURF.grib2.bz2"
+    assert dir_url(run, "RELHUM_2M", "f") == "https://opendata.dwd.de/weather/nwp/icon/grib/06/relhum_2m/f"
+    assert 975 not in COLUMN_PLEVELS and COLUMN_PLEVELS == sorted(COLUMN_PLEVELS, reverse=True)
+    # The HHL half levels are exactly the bounds of the model levels used.
+    assert COLUMN_HHL_LEVELS == sorted({lv for m in COLUMN_MLEVELS for lv in (m, m + 1)})
+
+
+def test_missing_column_files_names_what_the_listings_lack():
+    from pipeline.dwd import column_files, missing_column_files, pressure_file_name
+    run = dt.datetime(2026, 10, 2, 0, tzinfo=dt.timezone.utc)
+    files = column_files(run, [0, 1])
+    gone = pressure_file_name(run, 1, 700, "FI")
+    pages = {f: "".join(f'<a href="{n}">{n}</a>\n' for n in names if n != gone) for f, names in files.items()}
+    assert missing_column_files(lambda hh, field: pages.get(field, "") if hh == "00" else "", run, [0, 1]) == [gone]
+    pages["FI"] += f'<a href="{gone}">x</a>'
+    assert missing_column_files(lambda hh, field: pages.get(field, "") if hh == "00" else "", run, [0, 1]) == []
+    # Per step: each pressure field on each level, each model level's T, each
+    # single-level field; once per run: HSURF and each HHL half level.
+    from pipeline.dwd import COLUMN_PFIELDS, COLUMN_PLEVELS, COLUMN_MLEVELS, COLUMN_SFIELDS, COLUMN_HHL_LEVELS
+    per_step = len(COLUMN_PFIELDS) * len(COLUMN_PLEVELS) + len(COLUMN_MLEVELS) + len(COLUMN_SFIELDS)
+    assert sum(len(v) for v in files.values()) == 2 * per_step + 1 + len(COLUMN_HHL_LEVELS)
+    assert len(set(n for v in files.values() for n in v)) == sum(len(v) for v in files.values())

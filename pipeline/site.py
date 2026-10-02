@@ -18,7 +18,11 @@ def tail_path(run):
     return f"tail/{run_id(run)}"
 
 
-def build_manifest(run, built, step_hours, squares, history_hours, complete=True, tail=None):
+def columns_path(run):
+    return f"columns/{run_id(run)}"
+
+
+def build_manifest(run, built, step_hours, squares, history_hours, complete=True, tail=None, columns=None):
     out = {
         "run": run_iso(run),
         # False for a test build (some steps, some squares). Only a complete
@@ -35,6 +39,12 @@ def build_manifest(run, built, step_hours, squares, history_hours, complete=True
         # Hours 123-144 of the newest whole 00Z/12Z run, for the app's days
         # 4-5 ({run, runMs, stepsMs, tiles}), or None. See run_build.build_tail.
         "tail": tail,
+        # The column feed (fog and inversion profiles, ICC1 — see
+        # docs/column-feed-design.md): {format, run, runMs, stepsMs,
+        # historySteps, spacing, side, tiles}, or None. Only the Vercel Blob
+        # copy of the manifest names it — the columns are not on Pages.
+        # Builds that predate it never read this key.
+        "columns": columns,
         "attribution": ATTRIBUTION,
     }
     return json.dumps(out, separators=(",", ":"))

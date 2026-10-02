@@ -37,8 +37,10 @@ jobs:
             set -e
             if [ "$rc" = "0" ]; then
               gh workflow run build.yml --ref main
-              # A build takes ~6 min and Pages ~1.5 more; don't ask again
-              # until the new manifest can be live.
+              # A build takes ~20 min (~7 for the clouds, ~13 for the
+              # column feed) and Pages ~1.5 more; don't ask again until the
+              # new manifest can be live. A tick that asks early anyway only
+              # queues a build that exits early.
               sleep 1800
             else
               sleep 600

@@ -1,0 +1,42 @@
+name: columns-measure
+# Measures the column feed on REAL DWD data without publishing anything: no
+# secrets, a read-only token, no Pages/Blob/state step. The session that wrote
+# the column feed could not reach opendata.dwd.de, so what DWD lists and the
+# sizes and build time in docs/column-feed-design.md come from this workflow.
+# Run by hand (Actions → columns-measure → Run workflow) after changing the
+# column feed's fields, format or node spacing.
+on:
+  workflow_dispatch:
+    inputs:
+      only:
+        description: "all = sizes, time and checks; interp = only the interpolation error by spacing"
+        default: all
+permissions:
+  contents: read
+concurrency:
+  group: columns-measure
+  cancel-in-progress: true
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - name: install cdo (as build.yml does)
+        run: |
+          wget -qO mm https://micro.mamba.pm/api/micromamba/linux-64/latest
+          tar -xj -f mm bin/micromamba
+          ./bin/micromamba create -y -q -p /tmp/cdo -c conda-forge cdo
+          echo "/tmp/cdo/bin" >> "$GITHUB_PATH"
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r requirements.txt
+      - run: python -m pytest -q
+      - name: measure (writes only under /mnt/measure)
+        env:
+          PYTHONUNBUFFERED: "1"
+          ONLY: ${{ inputs.only }}
+        run: |
+          sudo mkdir -p /mnt/measure && sudo chown "$USER" /mnt/measure
+          nproc; free -g; df -h / /mnt
+          python tools/measure_columns.py --out /mnt/measure --strides 2,4,8 --only "${ONLY:-all}"

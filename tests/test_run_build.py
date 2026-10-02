@@ -25,7 +25,7 @@ def _listing(run, field, steps=STEPS):
     return "".join(f'<a href="{file_name(run, s, field)}">x</a>\n' for s in steps)
 
 
-def _no_columns(paths, kit, work):
+def _no_columns(paths, kit, work, stride):
     raise AssertionError("these listings carry no column files: no column build")
 
 
@@ -54,7 +54,7 @@ def _fake_deps(tmp_path, world_value=lambda step, field: 0, prev_manifest=None):
     return run_build.Deps(listing=listing, fetch_text=fetch_text, download=download,
                           regrid=regrid, ensure_kit=lambda work: Path("/kit"),
                           now=lambda: dt.datetime(2026, 9, 27, 3, tzinfo=UTC),
-                          regrid_levels=_no_columns, sleep=lambda s: calls["sleeps"].append(s)), calls
+                          lattice_levels=_no_columns, sleep=lambda s: calls["sleeps"].append(s)), calls
 
 
 def test_early_exit_when_the_site_already_has_this_run(tmp_path, capsys):
@@ -291,11 +291,12 @@ def _column_value(name):
     return 2, {"T_2M": 283.15 + step, "RELHUM_2M": 91.0}[m.group(2)]
 
 
-def _fake_regrid_levels(paths, kit, work):
+def _fake_lattice_levels(paths, kit, work, stride):
+    shape = columns.lattice(np.zeros((NY, NX), np.uint8), stride).shape
     out = {}
     for p in paths:
         lv, v = _column_value(Path(p).name)
-        out[lv] = np.full((NY, NX), v, dtype=np.float32)
+        out[lv] = np.full(shape, v, dtype=np.float32)
     return out
 
 
@@ -313,7 +314,7 @@ def _deps_with_columns(tmp_path, steps, column_steps=None):
         if hh != f"{run:%H}":
             return ""
         return "".join(f'<a href="{n}">x</a>\n' for n in files.get(field, []))
-    return deps._replace(listing=listing, regrid_levels=_fake_regrid_levels), calls
+    return deps._replace(listing=listing, lattice_levels=_fake_lattice_levels), calls
 
 
 def dwd_fields():
@@ -403,11 +404,11 @@ def test_a_column_failure_never_fails_the_build(tmp_path, capsys):
     steps = [0, 1]
     deps, _ = _deps_with_columns(tmp_path, steps)
 
-    def broken(paths, kit, work):
+    def broken(paths, kit, work, stride):
         if any("RELHUM_2M" in Path(p).name for p in paths):
             raise OSError("cdo died")
-        return _fake_regrid_levels(paths, kit, work)
-    assert _columns_build(tmp_path, deps._replace(regrid_levels=broken), steps) == run_build.BUILT
+        return _fake_lattice_levels(paths, kit, work, stride)
+    assert _columns_build(tmp_path, deps._replace(lattice_levels=broken), steps) == run_build.BUILT
     m = json.loads((tmp_path / "site" / "manifest.json").read_text())
     assert m["columns"] is None
     assert not (tmp_path / "site" / "columns").exists()

@@ -12,6 +12,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 from collections import namedtuple
@@ -20,16 +21,16 @@ import numpy as np
 
 from pipeline import columns, dwd, history, live, site
 from pipeline.encode import encode_square, quantize, FIELD_COUNT
-from pipeline.regrid import ensure_kit, regrid, regrid_levels
+from pipeline.regrid import ensure_kit, regrid, lattice_levels
 from pipeline.squares import all_squares, parse_name, slice_square, NX, NY
 
 BUILT, NOTHING_TO_DO, FAILED = 0, 3, 1
 ROOT = Path(__file__).resolve().parent
 
-# regrid_levels and sleep are the column feed's (build_columns); they default
+# lattice_levels and sleep are the column feed's (build_columns); they default
 # to the real ones so a caller that predates the columns still builds.
-Deps = namedtuple("Deps", "listing fetch_text download regrid ensure_kit now regrid_levels sleep",
-                  defaults=(regrid_levels, time.sleep))
+Deps = namedtuple("Deps", "listing fetch_text download regrid ensure_kit now lattice_levels sleep",
+                  defaults=(lattice_levels, time.sleep))
 
 
 def _http_text(url, timeout=60):
@@ -57,7 +58,7 @@ def _download(url, dst, timeout=120, attempts=3, urlopen=urllib.request.urlopen)
 
 REAL = Deps(listing=lambda hh, field: _http_text(dwd.listing_url(hh, field)),
             fetch_text=_http_text, download=_download, regrid=regrid, ensure_kit=ensure_kit,
-            now=lambda: dt.datetime.now(dt.timezone.utc), regrid_levels=regrid_levels, sleep=time.sleep)
+            now=lambda: dt.datetime.now(dt.timezone.utc), lattice_levels=lattice_levels, sleep=time.sleep)
 
 
 def live_complete_run(deps, pages_base):
@@ -304,15 +305,32 @@ def _wait_for_column_files(deps, run, steps):
         waited += COLUMN_POLL_S
 
 
-def _fetch_levels(deps, kit, work, names, run, field):
-    """Download DWD files of ONE parameter and remap them in one cdo call."""
+# Seconds spent downloading and remapping column files, summed over the
+# workers; build_columns prints them so a build's log shows where time goes.
+_CLOCK = {}
+_CLOCK_LOCK = threading.Lock()
+
+
+def _clock(what, t0):
+    with _CLOCK_LOCK:
+        _CLOCK[what] = _CLOCK.get(what, 0.0) + time.monotonic() - t0
+
+
+def _fetch_levels(deps, kit, work, names, run, field, stride):
+    """Download DWD files of ONE parameter → {level: lattice array}: one cdo
+    decode for all of them, then DWD's weights at the lattice's points."""
     paths = []
     try:
         for n in names:
             dst = Path(work) / n
+            t0 = time.monotonic()
             deps.download(dwd.dir_url(run, field, n), dst)
+            _clock("download", t0)
             paths.append(dst)
-        return deps.regrid_levels(paths, kit, work)
+        t0 = time.monotonic()
+        out = deps.lattice_levels(paths, kit, work, stride)
+        _clock("remap", t0)
+        return out
     finally:
         for p in paths:
             p.unlink(missing_ok=True)
@@ -326,11 +344,11 @@ def _only(levels):
 
 def column_statics(deps, kit, work, run, stride):
     """(HSURF lattice codes [1][LY][LX], T80 weight lattice) — once per run."""
-    hsurf = columns.lattice(_only(_fetch_levels(deps, kit, work, [dwd.invariant_file_name(run, "HSURF")], run, "HSURF")), stride)
+    hsurf = _only(_fetch_levels(deps, kit, work, [dwd.invariant_file_name(run, "HSURF")], run, "HSURF", stride))
     hhl = {}
     for lv in dwd.COLUMN_HHL_LEVELS:          # one cdo call each: no level axis to trust
         name = dwd.invariant_file_name(run, "HHL", lv)
-        hhl[lv] = columns.lattice(_only(_fetch_levels(deps, kit, work, [name], run, "HHL")), stride)
+        hhl[lv] = _only(_fetch_levels(deps, kit, work, [name], run, "HHL", stride))
     static = columns.quantize(hsurf, *columns._QUANT[columns.HSURF])[None]
     return static, t80_weights(hhl, hsurf)
 
@@ -339,16 +357,16 @@ def column_step(deps, kit, work, run, step, group, stride, w80):
     """One step's share of the column fields: {key: lattice u16 codes}."""
     if group in dwd.COLUMN_PFIELDS:
         names = [dwd.pressure_file_name(run, step, lv, group) for lv in dwd.COLUMN_PLEVELS]
-        levels = _fetch_levels(deps, kit, work, names, run, group)
+        levels = _fetch_levels(deps, kit, work, names, run, group, stride)
         if sorted(levels) != sorted(dwd.COLUMN_PLEVELS):
             raise ValueError(f"{group} +{step}: levels {sorted(levels, key=str)}, wanted {dwd.COLUMN_PLEVELS}")
-        return {(group, lv): _to_codes((group, lv), columns.lattice(levels[lv], stride)) for lv in dwd.COLUMN_PLEVELS}
+        return {(group, lv): _to_codes((group, lv), levels[lv]) for lv in dwd.COLUMN_PLEVELS}
     if group in dwd.COLUMN_SFIELDS:
-        arr = _only(_fetch_levels(deps, kit, work, [dwd.file_name(run, step, group)], run, group))
-        return {(group, None): _to_codes((group, None), columns.lattice(arr, stride))}
+        arr = _only(_fetch_levels(deps, kit, work, [dwd.file_name(run, step, group)], run, group, stride))
+        return {(group, None): _to_codes((group, None), arr)}
     if group == "T_80M":
         upper, lower = sorted(dwd.COLUMN_MLEVELS)
-        t = {lv: columns.lattice(_only(_fetch_levels(deps, kit, work, [dwd.model_file_name(run, step, lv, "T")], run, "T")), stride)
+        t = {lv: _only(_fetch_levels(deps, kit, work, [dwd.model_file_name(run, step, lv, "T")], run, "T", stride))
              for lv in (upper, lower)}
         t80 = (1 - w80) * t[lower] + w80 * t[upper]
         return {("T_80M", None): _to_codes(("T_80M", None), t80)}
@@ -359,6 +377,8 @@ def fetch_columns(deps, kit, work, run, steps, workers, stride):
     """Download and remap every column field of `run` at `steps`: (static
     u16 [1][LY][LX], [(unix hour, u16 [fields][LY][LX])] in time order)."""
     work = Path(work)
+    with _CLOCK_LOCK:
+        _CLOCK.clear()
     static, w80 = column_statics(deps, kit, work, run, stride)
     keys = column_keys()
     groups = list(dwd.COLUMN_PFIELDS) + list(dwd.COLUMN_SFIELDS) + ["T_80M"]
@@ -420,7 +440,8 @@ def build_columns(site_dir, state, work, deps, kit, run, steps, names, workers, 
         shutil.rmtree(Path(site_dir) / site_columns_root(), ignore_errors=True)
         return None
     print(f"columns: {len(names)} squares, {len(hours)} steps ({len(past)} history), "
-          f"{total / 1e6:.1f} MB, {time.monotonic() - t0:.0f} s")
+          f"{total / 1e6:.1f} MB, {time.monotonic() - t0:.0f} s (worker-seconds: "
+          + ", ".join(f"{k} {v:.0f}" for k, v in sorted(_CLOCK.items())) + ")")
     return {"format": "ICC1", "run": dwd.run_iso(run), "runMs": int(run.timestamp() * 1000),
             "stepsMs": [h * 3600 * 1000 for h in hours], "historySteps": len(past),
             "spacing": columns.spacing_deg(stride), "side": columns.side(stride),

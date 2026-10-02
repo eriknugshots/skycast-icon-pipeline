@@ -5,20 +5,20 @@
 # decoded column as a sanity check. Run by .github/workflows/columns-measure.yml;
 # it writes only under --out and never touches Pages, Blob or state.
 import argparse
-import datetime as dt
 import os
 import sys
 import time
 from pathlib import Path
 
+import netCDF4
 import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import run_build                                    # noqa: E402
-from pipeline import columns, dwd, history          # noqa: E402
-from pipeline.squares import all_squares, NX, NY    # noqa: E402
+from pipeline import columns, dwd, history, regrid  # noqa: E402
+from pipeline.squares import all_squares            # noqa: E402
 
 HISTORY_REPLAY = 60          # a full build carries 60 history hours; replay steps 0-59 to stand in
 
@@ -55,13 +55,49 @@ def main():
         raise SystemExit(1)
     kit = deps.ensure_kit(work)
 
-    # The lowest model levels' heights above ground, from HHL.
+    # DWD's weights, and our lattice cut of them checked against cdo's own
+    # full remap on real fields (step 0: T on seven levels, T_2M, HSURF).
     t0 = time.monotonic()
-    hs = run_build._only(run_build._fetch_levels(deps, kit, work, [dwd.invariant_file_name(run, "HSURF")], run, "HSURF"))
+    remap = regrid.lattice_remap(kit, fine)
+    with netCDF4.Dataset(Path(kit) / regrid.WEIGHTS_FILE) as w:
+        dims = {k: len(v) for k, v in w.dimensions.items()}
+        method = getattr(w, "map_method", "?")
+    out(f"weights: {dims}, map_method {method!r}; lattice cut at stride {fine}: {remap.node.size} links, "
+        f"{int(remap.empty.sum())} points without one, {time.monotonic() - t0:.0f} s", summary)
+    checks = [("T", [dwd.pressure_file_name(run, 0, lv, "T") for lv in dwd.COLUMN_PLEVELS]),
+              ("T_2M", [dwd.file_name(run, 0, "T_2M")]),
+              ("HSURF", [dwd.invariant_file_name(run, "HSURF")])]
+    out("| check | levels | cdo full remap s | lattice s | max abs diff | NaN cdo / ours |\n|---|---|---|---|---|---|", summary)
+    for field, names in checks:
+        paths = []
+        for n in names:
+            dst = work / n
+            deps.download(dwd.dir_url(run, field, n), dst)
+            paths.append(dst)
+        t0 = time.monotonic()
+        full = regrid.regrid_levels(paths, kit, work)
+        t_full = time.monotonic() - t0
+        t0 = time.monotonic()
+        ours = regrid.lattice_levels(paths, kit, work, fine)
+        t_ours = time.monotonic() - t0
+        if sorted(full, key=str) != sorted(ours, key=str):
+            raise SystemExit(f"{field}: levels differ {sorted(full, key=str)} vs {sorted(ours, key=str)}")
+        diff = max(float(np.nanmax(np.abs(columns.lattice(full[k], fine) - ours[k]))) for k in full)
+        nan = (sum(int(np.isnan(columns.lattice(full[k], fine)).sum()) for k in full),
+               sum(int(np.isnan(ours[k]).sum()) for k in ours))
+        out(f"| {field} | {len(full)} | {t_full:.1f} | {t_ours:.1f} | {diff:.2e} | {nan[0]} / {nan[1]} |", summary)
+        for p in paths:
+            p.unlink(missing_ok=True)
+        del full, ours
+
+    # The lowest model levels' heights above ground, from HHL (at the lattice).
+    t0 = time.monotonic()
+    hs = run_build._only(run_build._fetch_levels(deps, kit, work, [dwd.invariant_file_name(run, "HSURF")], run, "HSURF", fine))
     hhl = {}
     for lv in range(114, 122):
-        hhl[lv] = run_build._only(run_build._fetch_levels(deps, kit, work, [dwd.invariant_file_name(run, "HHL", lv)], run, "HHL"))
+        hhl[lv] = run_build._only(run_build._fetch_levels(deps, kit, work, [dwd.invariant_file_name(run, "HHL", lv)], run, "HHL", fine))
     out(f"HHL[121] − HSURF: max |Δ| {np.nanmax(np.abs(hhl[121] - hs)):.2f} m", summary)
+    out(f"model levels' height above ground, every node of the {columns.spacing_deg(fine)}° lattice:", summary)
     out("| full level | AGL p1 | p50 | p99 | min | max |\n|---|---|---|---|---|---|", summary)
     for lv in range(114, 121):
         z = (hhl[lv] + hhl[lv + 1]) / 2 - hhl[121]
@@ -78,7 +114,8 @@ def main():
     static, own = run_build.fetch_columns(deps, kit, work, run, steps, a.workers, fine)
     fetch_s = time.monotonic() - t0
     out(f"fetch (download + cdo + quantise), {len(steps)} steps, {a.workers} workers: "
-        f"**{fetch_s / 60:.1f} min**", summary)
+        f"**{fetch_s / 60:.1f} min**; worker-seconds: "
+        + ", ".join(f"{k} {v:.0f}" for k, v in sorted(run_build._CLOCK.items())), summary)
 
     # 60 replayed history hours + the run's own steps = a full build's 153.
     base = history.hour_of(run)

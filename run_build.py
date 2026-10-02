@@ -9,22 +9,27 @@ import concurrent.futures as cf
 import datetime as dt
 import json
 import os
+import shutil
 import subprocess
 import sys
+import time
 import urllib.request
 from collections import namedtuple
 from pathlib import Path
 import numpy as np
 
-from pipeline import dwd, history, live, site
+from pipeline import columns, dwd, history, live, site
 from pipeline.encode import encode_square, quantize, FIELD_COUNT
-from pipeline.regrid import ensure_kit, regrid
+from pipeline.regrid import ensure_kit, regrid, regrid_levels
 from pipeline.squares import all_squares, parse_name, slice_square, NX, NY
 
 BUILT, NOTHING_TO_DO, FAILED = 0, 3, 1
 ROOT = Path(__file__).resolve().parent
 
-Deps = namedtuple("Deps", "listing fetch_text download regrid ensure_kit now")
+# regrid_levels and sleep are the column feed's (build_columns); they default
+# to the real ones so a caller that predates the columns still builds.
+Deps = namedtuple("Deps", "listing fetch_text download regrid ensure_kit now regrid_levels sleep",
+                  defaults=(regrid_levels, time.sleep))
 
 
 def _http_text(url, timeout=60):
@@ -52,7 +57,7 @@ def _download(url, dst, timeout=120, attempts=3, urlopen=urllib.request.urlopen)
 
 REAL = Deps(listing=lambda hh, field: _http_text(dwd.listing_url(hh, field)),
             fetch_text=_http_text, download=_download, regrid=regrid, ensure_kit=ensure_kit,
-            now=lambda: dt.datetime.now(dt.timezone.utc))
+            now=lambda: dt.datetime.now(dt.timezone.utc), regrid_levels=regrid_levels, sleep=time.sleep)
 
 
 def live_complete_run(deps, pages_base):
@@ -126,23 +131,32 @@ def build(site, state, work, deps, pages_base, steps=None, squares=None, workers
             total += len(blob)
         return total
 
-    size = write_squares(QUANT_STEP)
-    tail = build_tail(site, work, deps, kit, names, workers) if full else None
-    site_bytes = size + _dir_bytes(site / site_tail_tiles_root())
-    if site_bytes > SITE_BUDGET_BYTES:
-        print(f"::warning::{site_bytes / 1e6:.0f} MB is over the {SITE_BUDGET_BYTES / 1e6:.0f} MB budget: "
-              f"rewriting the squares in {QUANT_FALLBACK_STEP} % steps")
-        size = write_squares(QUANT_FALLBACK_STEP)
-        site_bytes = size + _dir_bytes(site / site_tail_tiles_root())
-    print(f"site: {site_bytes / 1e6:.0f} MB in squares")
-    (site / "manifest.json").write_text(site_manifest(run, deps.now(), hours, names, len(past), full, tail))
-
     # The run's hours 0-5, for the next build's history — only when they were built.
     head_steps = [s for s in range(history.HEAD_STEPS) if s in steps]
     if len(head_steps) == history.HEAD_STEPS:
         head = np.stack([np.stack([world[(s, f)] for f in dwd.FIELDS]) for s in head_steps])
         history.save_run_head(state, run, head)
         history.prune(state, dwd.run_id(run))
+
+    world.clear()                        # the stacks hold copies; ~1.5 GB back for the columns
+    size = write_squares(QUANT_STEP)
+    tail = build_tail(site, work, deps, kit, names, workers) if full else None
+    cols = build_columns(site, state, work, deps, kit, run, steps, names, workers)
+    site_bytes = size + _dir_bytes(site / site_tail_tiles_root()) + _dir_bytes(site / site_columns_root())
+    if site_bytes > SITE_BUDGET_BYTES:
+        print(f"::warning::{site_bytes / 1e6:.0f} MB is over the {SITE_BUDGET_BYTES / 1e6:.0f} MB budget: "
+              f"rewriting the squares in {QUANT_FALLBACK_STEP} % steps")
+        size = write_squares(QUANT_FALLBACK_STEP)
+        site_bytes = size + _dir_bytes(site / site_tail_tiles_root()) + _dir_bytes(site / site_columns_root())
+    if site_bytes > SITE_BUDGET_BYTES and cols is not None:
+        # Still over: the clouds are the feed, the fog columns an extra. Pages
+        # refuses a site over 1 GB outright, which would freeze every build.
+        print(f"::warning::{site_bytes / 1e6:.0f} MB is still over the budget: leaving the columns out")
+        shutil.rmtree(site / site_columns_root(), ignore_errors=True)
+        cols = None
+        site_bytes = size + _dir_bytes(site / site_tail_tiles_root())
+    print(f"site: {site_bytes / 1e6:.0f} MB in squares, tail and columns")
+    (site / "manifest.json").write_text(site_manifest(run, deps.now(), hours, names, len(past), full, tail, cols))
     print(f"built {len(names)} squares, {len(hours)} steps ({len(past)} history)")
     return BUILT
 
@@ -171,8 +185,8 @@ def site_tiles(run):
     return site.tiles_path(run)
 
 
-def site_manifest(run, built, hours, names, history_steps, complete, tail=None):
-    return site.build_manifest(run, built, hours, names, history_steps, complete, tail)
+def site_manifest(run, built, hours, names, history_steps, complete, tail=None, columns=None):
+    return site.build_manifest(run, built, hours, names, history_steps, complete, tail, columns)
 
 
 def site_tail_tiles(run):
@@ -218,6 +232,195 @@ def build_tail(site_dir, work, deps, kit, names, workers):
     print(f"tail: run {dwd.run_iso(run)}, {len(hours)} steps, {len(names)} squares")
     return {"run": dwd.run_iso(run), "runMs": int(run.timestamp() * 1000),
             "stepsMs": [h * 3600 * 1000 for h in hours], "tiles": site_tail_tiles(run)}
+
+
+# ---- The column feed (docs/column-feed-design.md) ---------------------------
+# Every COLUMN_STRIDE-th node of the 0.125° grid: 4 → 0.5°, 11 nodes a side.
+COLUMN_STRIDE = 4
+# DWD lists a run's fields over ~20 minutes; the cloud fields that start a
+# build are not the column fields. Wait this long for the rest, then publish
+# the clouds without columns rather than hold the feed back.
+COLUMN_WAIT_S = 15 * 60
+COLUMN_POLL_S = 60
+G = 9.80665                              # FI is geopotential (m² s⁻²); GH = FI / g
+K0 = 273.15
+
+
+def site_columns_root():
+    return "columns"
+
+
+def site_columns_tiles(run):
+    return site.columns_path(run)
+
+
+def column_keys():
+    """The dynamic fields' keys, in field_spec's (body) order."""
+    keys = []
+    for p in dwd.COLUMN_PLEVELS:
+        keys += [("T", p), ("RELHUM", p), ("FI", p)]
+    return keys + [("T_2M", None), ("RELHUM_2M", None), ("T_80M", None)]
+
+
+def column_spec():
+    return columns.field_spec(dwd.COLUMN_PLEVELS)
+
+
+def _to_codes(key, arr):
+    """A physical world/lattice field (DWD units) → u16 codes, app units."""
+    field = key[0]
+    if field in ("T", "T_2M", "T_80M"):
+        return columns.quantize(arr - K0, *columns._QUANT[columns.T])
+    if field in ("RELHUM", "RELHUM_2M"):
+        return columns.quantize(arr, *columns._QUANT[columns.RH])
+    if field == "FI":
+        return columns.quantize(arr / G, *columns._QUANT[columns.GH])
+    raise KeyError(field)
+
+
+def t80_weights(hhl, hsurf):
+    """hhl: {half level: lattice height MSL}, hsurf: lattice MSL. The weight
+    w of the UPPER model level such that T(80 m above ground) = (1 − w) ·
+    T(lower) + w · T(upper), linear in height between the two full levels of
+    dwd.COLUMN_MLEVELS (a full level sits midway between its half levels)."""
+    upper, lower = sorted(dwd.COLUMN_MLEVELS)                 # 117 is above 118
+    z_up = (hhl[upper] + hhl[upper + 1]) / 2 - hsurf
+    z_lo = (hhl[lower] + hhl[lower + 1]) / 2 - hsurf
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return (80.0 - z_lo) / (z_up - z_lo)
+
+
+def _wait_for_column_files(deps, run, steps):
+    waited = 0
+    while True:
+        missing = dwd.missing_column_files(deps.listing, run, steps)
+        if not missing:
+            return True
+        if waited >= COLUMN_WAIT_S:
+            print(f"::warning::columns: {len(missing)} files of run {dwd.run_iso(run)} still not listed "
+                  f"after {waited // 60} min (first: {missing[0]}) — publishing without columns")
+            return False
+        deps.sleep(COLUMN_POLL_S)
+        waited += COLUMN_POLL_S
+
+
+def _fetch_levels(deps, kit, work, names, run, field):
+    """Download DWD files of ONE parameter and remap them in one cdo call."""
+    paths = []
+    try:
+        for n in names:
+            dst = Path(work) / n
+            deps.download(dwd.dir_url(run, field, n), dst)
+            paths.append(dst)
+        return deps.regrid_levels(paths, kit, work)
+    finally:
+        for p in paths:
+            p.unlink(missing_ok=True)
+
+
+def _only(levels):
+    if len(levels) != 1:
+        raise ValueError(f"expected one level, got {sorted(levels, key=str)}")
+    return next(iter(levels.values()))
+
+
+def column_statics(deps, kit, work, run, stride):
+    """(HSURF lattice codes [1][LY][LX], T80 weight lattice) — once per run."""
+    hsurf = columns.lattice(_only(_fetch_levels(deps, kit, work, [dwd.invariant_file_name(run, "HSURF")], run, "HSURF")), stride)
+    hhl = {}
+    for lv in dwd.COLUMN_HHL_LEVELS:          # one cdo call each: no level axis to trust
+        name = dwd.invariant_file_name(run, "HHL", lv)
+        hhl[lv] = columns.lattice(_only(_fetch_levels(deps, kit, work, [name], run, "HHL")), stride)
+    static = columns.quantize(hsurf, *columns._QUANT[columns.HSURF])[None]
+    return static, t80_weights(hhl, hsurf)
+
+
+def column_step(deps, kit, work, run, step, group, stride, w80):
+    """One step's share of the column fields: {key: lattice u16 codes}."""
+    if group in dwd.COLUMN_PFIELDS:
+        names = [dwd.pressure_file_name(run, step, lv, group) for lv in dwd.COLUMN_PLEVELS]
+        levels = _fetch_levels(deps, kit, work, names, run, group)
+        if sorted(levels) != sorted(dwd.COLUMN_PLEVELS):
+            raise ValueError(f"{group} +{step}: levels {sorted(levels, key=str)}, wanted {dwd.COLUMN_PLEVELS}")
+        return {(group, lv): _to_codes((group, lv), columns.lattice(levels[lv], stride)) for lv in dwd.COLUMN_PLEVELS}
+    if group in dwd.COLUMN_SFIELDS:
+        arr = _only(_fetch_levels(deps, kit, work, [dwd.file_name(run, step, group)], run, group))
+        return {(group, None): _to_codes((group, None), columns.lattice(arr, stride))}
+    if group == "T_80M":
+        upper, lower = sorted(dwd.COLUMN_MLEVELS)
+        t = {lv: columns.lattice(_only(_fetch_levels(deps, kit, work, [dwd.model_file_name(run, step, lv, "T")], run, "T")), stride)
+             for lv in (upper, lower)}
+        t80 = (1 - w80) * t[lower] + w80 * t[upper]
+        return {("T_80M", None): _to_codes(("T_80M", None), t80)}
+    raise KeyError(group)
+
+
+def fetch_columns(deps, kit, work, run, steps, workers, stride):
+    """Download and remap every column field of `run` at `steps`: (static
+    u16 [1][LY][LX], [(unix hour, u16 [fields][LY][LX])] in time order)."""
+    work = Path(work)
+    static, w80 = column_statics(deps, kit, work, run, stride)
+    keys = column_keys()
+    groups = list(dwd.COLUMN_PFIELDS) + list(dwd.COLUMN_SFIELDS) + ["T_80M"]
+    jobs = [(s, g) for s in steps for g in groups]
+    got = {s: {} for s in steps}
+    with cf.ThreadPoolExecutor(max_workers=workers) as pool:
+        futs = [pool.submit(column_step, deps, kit, work, run, s, g, stride, w80) for s, g in jobs]
+        for (s, g), fut in zip(jobs, futs):
+            got[s].update(fut.result())
+    base = history.hour_of(run)
+    return static, [(base + s, np.stack([got.pop(s)[k] for k in keys])) for s in steps]
+
+
+def write_columns(site_dir, run, names, stride, static, stacks):
+    """One .icc per square under columns/<run>/; returns the bytes written."""
+    spec = column_spec()
+    hours = [h for h, _ in stacks]
+    tiles = Path(site_dir) / site_columns_tiles(run)
+    tiles.mkdir(parents=True, exist_ok=True)
+    total = 0
+    for name in names:
+        lat, lon = parse_name(name)
+        cube = np.stack([columns.slice_nodes(c, lat, lon, stride) for _, c in stacks])
+        blob = columns.encode_columns(lat, lon, stride, hours, spec, cube,
+                                      columns.slice_nodes(static, lat, lon, stride))
+        (tiles / f"{name}.icc").write_bytes(blob)
+        total += len(blob)
+    return total
+
+
+def build_columns(site_dir, state, work, deps, kit, run, steps, names, workers, stride=None):
+    """The column feed: per square, every column field at every step (history
+    first), one .icc under columns/<run>/. Returns the manifest's `columns`
+    entry, or None; a failure here never fails the build — the app keeps its
+    Open-Meteo profile."""
+    stride = stride or COLUMN_STRIDE
+    t0 = time.monotonic()
+    try:
+        if not _wait_for_column_files(deps, run, steps):
+            return None
+        static, own = fetch_columns(deps, kit, work, run, steps, workers, stride)
+        past = history.load_history_steps(state, run, sub="columns", shape=own[0][1].shape)
+        stacks = past + own
+        hours = [h for h, _ in stacks]
+        base = history.hour_of(run)
+        head_steps = [s for s in range(history.HEAD_STEPS) if s in steps]
+        if len(head_steps) == history.HEAD_STEPS:
+            by_hour = dict(own)
+            history.save_run_head(state, run, np.stack([by_hour[base + s] for s in head_steps]),
+                                  sub="columns", dtype=np.uint16)
+            history.prune(state, dwd.run_id(run), sub="columns")
+        total = write_columns(site_dir, run, names, stride, static, stacks)
+    except Exception as e:
+        print(f"::warning::columns failed: {type(e).__name__}: {e}")
+        shutil.rmtree(Path(site_dir) / site_columns_root(), ignore_errors=True)
+        return None
+    print(f"columns: {len(names)} squares, {len(hours)} steps ({len(past)} history), "
+          f"{total / 1e6:.1f} MB, {time.monotonic() - t0:.0f} s")
+    return {"format": "ICC1", "run": dwd.run_iso(run), "runMs": int(run.timestamp() * 1000),
+            "stepsMs": [h * 3600 * 1000 for h in hours], "historySteps": len(past),
+            "spacing": columns.spacing_deg(stride), "side": columns.side(stride),
+            "tiles": site_columns_tiles(run)}
 
 
 def main():

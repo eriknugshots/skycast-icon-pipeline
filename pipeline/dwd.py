@@ -72,3 +72,61 @@ def newest_complete_run(listing, run_hours=None, steps=None):
         if all(not missing_files(html if f == FIELDS[0] else listing(hh, f), run, f, steps) for f in FIELDS):
             candidates.append(run)
     return max(candidates) if candidates else None
+
+
+# ---- The column feed (docs/column-feed-design.md) ---------------------------
+# Pressure levels DWD publishes for ICON global, of the ones the app's fog
+# profile reads (SkyCast INVERSION_LEVELS_HPA): 975 hPa is NOT published
+# (verified on DWD's listing 2026-10-02: 1000, 950, 925, 900, 850, 800, 700,
+# 600 ... 30 — no 975), so the column carries seven levels.
+COLUMN_PLEVELS = [1000, 950, 925, 900, 850, 800, 700]
+COLUMN_PFIELDS = ["T", "RELHUM", "FI"]              # per pressure level
+COLUMN_SFIELDS = ["T_2M", "RELHUM_2M"]              # single level, per step
+# No 80 m field exists in ICON open data; T at 80 m above ground is
+# interpolated in height between these two model levels (full levels; 120 is
+# the lowest) with the time-invariant HHL (half-level heights). Their
+# heights above ground were measured on DWD's HHL (design doc).
+COLUMN_MLEVELS = [117, 118]
+COLUMN_HHL_LEVELS = [117, 118, 119]                 # bounds of full levels 117 and 118
+
+
+def pressure_file_name(run, step, level, field):
+    return f"icon_global_icosahedral_pressure-level_{run_id(run)}_{step:03d}_{level}_{field}.grib2.bz2"
+
+
+def model_file_name(run, step, level, field):
+    return f"icon_global_icosahedral_model-level_{run_id(run)}_{step:03d}_{level}_{field}.grib2.bz2"
+
+
+def invariant_file_name(run, field, level=None):
+    mid = f"_{level}" if level is not None else ""
+    return f"icon_global_icosahedral_time-invariant_{run_id(run)}{mid}_{field}.grib2.bz2"
+
+
+def dir_url(run, field, name):
+    """Every DWD file lives under grib/<run hour>/<field, lower case>/."""
+    return f"{BASE}/{run:%H}/{field.lower()}/{name}"
+
+
+def column_files(run, steps):
+    """{directory field: [file names]} — every file one column build reads."""
+    out = {f: [] for f in COLUMN_PFIELDS + COLUMN_SFIELDS + ["HHL", "HSURF"]}
+    out["HSURF"].append(invariant_file_name(run, "HSURF"))
+    out["HHL"] += [invariant_file_name(run, "HHL", lv) for lv in COLUMN_HHL_LEVELS]
+    for s in steps:
+        for f in COLUMN_PFIELDS:
+            out[f] += [pressure_file_name(run, s, lv, f) for lv in COLUMN_PLEVELS]
+        out["T"] += [model_file_name(run, s, lv, "T") for lv in COLUMN_MLEVELS]
+        for f in COLUMN_SFIELDS:
+            out[f].append(file_name(run, s, f))
+    return out
+
+
+def missing_column_files(listing, run, steps):
+    """`listing(hh, field) -> html`. The column files of `run` not listed yet."""
+    hh = f"{run:%H}"
+    missing = []
+    for field, names in column_files(run, steps).items():
+        html = listing(hh, field) or ""
+        missing += [n for n in names if n not in html]
+    return missing

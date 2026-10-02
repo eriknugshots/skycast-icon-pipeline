@@ -25,8 +25,12 @@ def _listing(run, field, steps=STEPS):
     return "".join(f'<a href="{file_name(run, s, field)}">x</a>\n' for s in steps)
 
 
+def _no_columns(paths, kit, work):
+    raise AssertionError("these listings carry no column files: no column build")
+
+
 def _fake_deps(tmp_path, world_value=lambda step, field: 0, prev_manifest=None):
-    calls = {"downloads": [], "regrids": []}
+    calls = {"downloads": [], "regrids": [], "sleeps": []}
 
     def listing(hh, field):
         return _listing(RUN, field) if hh == "00" else ""
@@ -49,7 +53,8 @@ def _fake_deps(tmp_path, world_value=lambda step, field: 0, prev_manifest=None):
 
     return run_build.Deps(listing=listing, fetch_text=fetch_text, download=download,
                           regrid=regrid, ensure_kit=lambda work: Path("/kit"),
-                          now=lambda: dt.datetime(2026, 9, 27, 3, tzinfo=UTC)), calls
+                          now=lambda: dt.datetime(2026, 9, 27, 3, tzinfo=UTC),
+                          regrid_levels=_no_columns, sleep=lambda s: calls["sleeps"].append(s)), calls
 
 
 def test_early_exit_when_the_site_already_has_this_run(tmp_path, capsys):

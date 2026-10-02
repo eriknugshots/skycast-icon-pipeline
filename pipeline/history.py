@@ -25,20 +25,24 @@ def hour_of(when):
     return int((when - _EPOCH).total_seconds() // 3600)
 
 
-def history_dir(state):
-    return Path(state) / "history"
+# `sub` names the history: "history" for the cloud squares, "columns" for
+# the column feed (pipeline/columns.py), whose head is u16 codes on its
+# coarser lattice — same runs, same hours, kept and pruned the same way.
+def history_dir(state, sub="history"):
+    return Path(state) / sub
 
 
-def run_file(state, run):
-    return history_dir(state) / f"{run:%Y%m%d%H}.npz"
+def run_file(state, run, sub="history"):
+    return history_dir(state, sub) / f"{run:%Y%m%d%H}.npz"
 
 
-def save_run_head(state, run, head):
-    """head: uint8 [6][4][NY][NX] — the run's hours 0-5, fields low/mid/high/total."""
+def save_run_head(state, run, head, sub="history", dtype=np.uint8):
+    """head: [6][fields][rows][cols] — the run's hours 0-5. For the clouds
+    uint8 [6][4][NY][NX], fields low/mid/high/total."""
     if head.shape[0] != HEAD_STEPS:
         raise ValueError(f"head must hold {HEAD_STEPS} steps, got {head.shape[0]}")
-    history_dir(state).mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(run_file(state, run), head=head.astype(np.uint8), run_hour=hour_of(run))
+    history_dir(state, sub).mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(run_file(state, run, sub), head=head.astype(dtype), run_hour=hour_of(run))
 
 
 def runs_to_keep(run_ids, current_id):
@@ -47,18 +51,18 @@ def runs_to_keep(run_ids, current_id):
     return ids[-KEEP_RUNS:]
 
 
-def prune(state, current_id):
-    keep = set(runs_to_keep([p.stem for p in history_dir(state).glob("*.npz")], current_id))
-    for p in history_dir(state).glob("*.npz"):
+def prune(state, current_id, sub="history"):
+    keep = set(runs_to_keep([p.stem for p in history_dir(state, sub).glob("*.npz")], current_id))
+    for p in history_dir(state, sub).glob("*.npz"):
         if p.stem not in keep:
             p.unlink()
 
 
-def load_history_steps(state, run):
+def load_history_steps(state, run, sub="history", shape=None):
     """[(unix_hour, uint8 [4][NY][NX]), ...] ascending, for hours in
     [run - HISTORY_HOURS, run). Later runs win where two runs share an hour
     (they never do at 6-hourly runs with 6-hour heads, but be safe)."""
-    d = history_dir(state)
+    d = history_dir(state, sub)
     if not d.exists():
         return []
     lo, hi = hour_of(run) - HISTORY_HOURS, hour_of(run)
@@ -67,6 +71,8 @@ def load_history_steps(state, run):
         with np.load(p) as z:
             base = int(z["run_hour"])
             head = z["head"]
+        if shape is not None and tuple(head.shape[1:]) != tuple(shape):
+            continue                       # another layout (e.g. another column stride or field list)
         for i in range(head.shape[0]):
             h = base + i
             if lo <= h < hi:

@@ -1,0 +1,121 @@
+#!/usr/bin/env python3
+# tools/measure_columns.py — the column feed on REAL DWD data, measured, not
+# published: build time, size per square and for the globe at several node
+# spacings, the model levels' heights above ground (for T at 80 m), and one
+# decoded column as a sanity check. Run by .github/workflows/columns-measure.yml;
+# it writes only under --out and never touches Pages, Blob or state.
+import argparse
+import datetime as dt
+import os
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+import run_build                                    # noqa: E402
+from pipeline import columns, dwd, history          # noqa: E402
+from pipeline.squares import all_squares, NX, NY    # noqa: E402
+
+HISTORY_REPLAY = 60          # a full build carries 60 history hours; replay steps 0-59 to stand in
+
+
+def out(line, summary):
+    print(line, flush=True)
+    if summary:
+        with open(summary, "a") as f:
+            f.write(line + "\n")
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--out", default="measure")
+    ap.add_argument("--strides", default="2,4,8")
+    ap.add_argument("--steps", default=None, help="comma list (default: dwd.STEPS)")
+    ap.add_argument("--workers", type=int, default=int(os.environ.get("BUILD_WORKERS", "6")))
+    a = ap.parse_args()
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    strides = sorted(int(s) for s in a.strides.split(","))
+    fine = strides[0]
+    if any(s % fine for s in strides):
+        raise SystemExit("every stride must be a multiple of the finest")
+    steps = [int(s) for s in a.steps.split(",")] if a.steps else dwd.STEPS
+    deps = run_build.REAL
+    work = Path(a.out) / "work"
+    work.mkdir(parents=True, exist_ok=True)
+
+    run = dwd.newest_complete_run(deps.listing)
+    out(f"## Column feed measurement — run {dwd.run_iso(run)}", summary)
+    missing = dwd.missing_column_files(deps.listing, run, steps)
+    out(f"column files missing from DWD's listing: {len(missing)} {missing[:3]}", summary)
+    if missing:
+        raise SystemExit(1)
+    kit = deps.ensure_kit(work)
+
+    # The lowest model levels' heights above ground, from HHL.
+    t0 = time.monotonic()
+    hs = run_build._only(run_build._fetch_levels(deps, kit, work, [dwd.invariant_file_name(run, "HSURF")], run, "HSURF"))
+    hhl = {}
+    for lv in range(114, 122):
+        hhl[lv] = run_build._only(run_build._fetch_levels(deps, kit, work, [dwd.invariant_file_name(run, "HHL", lv)], run, "HHL"))
+    out(f"HHL[121] − HSURF: max |Δ| {np.nanmax(np.abs(hhl[121] - hs)):.2f} m", summary)
+    out("| full level | AGL p1 | p50 | p99 | min | max |\n|---|---|---|---|---|---|", summary)
+    for lv in range(114, 121):
+        z = (hhl[lv] + hhl[lv + 1]) / 2 - hhl[121]
+        p = np.nanpercentile(z, [1, 50, 99])
+        out(f"| {lv} | {p[0]:.1f} | {p[1]:.1f} | {p[2]:.1f} | {np.nanmin(z):.1f} | {np.nanmax(z):.1f} |", summary)
+    w = run_build.t80_weights({lv: hhl[lv] for lv in dwd.COLUMN_HHL_LEVELS}, hs)
+    out(f"T80 weight of level {min(dwd.COLUMN_MLEVELS)}: p0 {np.nanmin(w):.3f} p50 {np.nanmedian(w):.3f} "
+        f"p100 {np.nanmax(w):.3f} (0..1 = interpolation, outside = extrapolation)", summary)
+    del hs, hhl, w
+    out(f"statics probe: {time.monotonic() - t0:.0f} s", summary)
+
+    # The build's own fetch, at the finest stride, timed.
+    t0 = time.monotonic()
+    static, own = run_build.fetch_columns(deps, kit, work, run, steps, a.workers, fine)
+    fetch_s = time.monotonic() - t0
+    out(f"fetch (download + cdo + quantise), {len(steps)} steps, {a.workers} workers: "
+        f"**{fetch_s / 60:.1f} min**", summary)
+
+    # 60 replayed history hours + the run's own steps = a full build's 153.
+    base = history.hour_of(run)
+    replay = [(base - HISTORY_REPLAY + i, own[i][1]) for i in range(min(HISTORY_REPLAY, len(own)))]
+    names = all_squares()
+    out("| spacing | side | steps | globe MB | per square KB min / median / max | encode s | state head MB |\n"
+        "|---|---|---|---|---|---|---|", summary)
+    for stride in strides:
+        k = stride // fine
+        st = static[:, ::k, ::k]
+        for label, stacks in (("run only", own), ("+60 h history", replay + own)):
+            t0 = time.monotonic()
+            site = Path(a.out) / f"site_{stride}_{len(stacks)}"
+            total = run_build.write_columns(site, run, names, stride, st,
+                                            [(h, c[:, ::k, ::k]) for h, c in stacks])
+            enc_s = time.monotonic() - t0
+            sizes = sorted(p.stat().st_size for p in (site / run_build.site_columns_tiles(run)).glob("*.icc"))
+            head = Path(a.out) / f"head_{stride}"
+            history.save_run_head(head, run, np.stack([c[:, ::k, ::k] for _, c in own[:6]]),
+                                  sub="columns", dtype=np.uint16)
+            head_mb = history.run_file(head, run, "columns").stat().st_size / 1e6
+            out(f"| {columns.spacing_deg(stride)}° | {columns.side(stride)} | {len(stacks)} ({label}) | "
+                f"{total / 1e6:.1f} | {sizes[0] / 1e3:.1f} / {sizes[len(sizes) // 2] / 1e3:.1f} / "
+                f"{sizes[-1] / 1e3:.1f} | {enc_s:.0f} | {head_mb:.1f} |", summary)
+
+    # One decoded column: Bend, OR (44.06 N, 121.31 W), nearest node at the
+    # coarsest stride, first step — units must read as the app's.
+    stride = strides[-1]
+    site = Path(a.out) / f"site_{stride}_{len(own)}"
+    d = columns.decode_columns((site / run_build.site_columns_tiles(run) / "N40W125.icc").read_bytes())
+    sp = d["spacing_mdeg"] / 1000
+    r, c = round((44.06 - 40) / sp), round((-121.31 + 125) / sp)
+    out(f"Bend node ({40 + r * sp:.2f}, {-125 + c * sp:.2f}), hour {d['step_hours'][0]}:", summary)
+    for f, codes in zip(d["spec"], d["fields"]):
+        v = columns.dequantize(codes[r, c] if f[1] == columns.STATIC else codes[r, c, 0], f[3], f[4])
+        out(f"  {columns.KIND_NAMES[f[0]]:5s} lt{f[1]} {f[2]:5d}: {float(v):9.2f}", summary)
+
+
+if __name__ == "__main__":
+    main()

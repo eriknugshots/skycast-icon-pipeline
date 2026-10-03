@@ -6,6 +6,9 @@ name: tick
 # build the moment a new complete run is listed, then starts the next tick
 # (a workflow may dispatch workflows with its own token). The schedule
 # below only restarts the chain if it ever breaks.
+# Each wake also checks the SkyCast alerts server on Vercel and emails Erik
+# when it goes down or recovers (alerts_watchdog.py; secret RESEND_ALERTS_KEY,
+# set by tools/watchdog-key-setup.sh). GitHub does not share Vercel's fate.
 on:
   schedule:
     - cron: "23 */4 * * *"
@@ -27,10 +30,21 @@ jobs:
       - name: watch DWD, build on a new run
         env:
           GH_TOKEN: ${{ github.token }}
+          RESEND_ALERTS_KEY: ${{ secrets.RESEND_ALERTS_KEY }}
         run: |
           PAGES_BASE="https://$(echo "${GITHUB_REPOSITORY}" | cut -d/ -f1).github.io/$(echo "${GITHUB_REPOSITORY}" | cut -d/ -f2)"
           end=$(( $(date +%s) + 5 * 3600 ))
+          # Watchdog for the SkyCast alerts server (alerts_watchdog.py), once
+          # per wake: in the background, killed after 60 s, its exit status
+          # ignored, so it cannot fail, stop or delay this loop. Its state is
+          # a file in this job's temp dir, fresh for every tick.
+          wd_state="${RUNNER_TEMP:-/tmp}/alerts-watchdog.json"
+          rm -f "$wd_state" || true
+          wd_pid=""
           while [ "$(date +%s)" -lt "$end" ]; do
+            if [ -n "$wd_pid" ]; then wait "$wd_pid" 2>/dev/null || true; fi
+            ( timeout -k 5 55 python alerts_watchdog.py --state-file "$wd_state" || echo "watchdog: gave up (exit $?), tick unaffected" ) &
+            wd_pid=$!
             set +e
             python tick.py --pages-base "$PAGES_BASE"
             rc=$?

@@ -19,3 +19,9 @@ Manifest key `columns` (null on Pages); format and sizes:
 
 Build: `.github/workflows/build.yml` every 10 minutes; `run_build.py` exits
 early unless DWD has a newer complete run than the live manifest.
+
+Alerts watchdog: every wake of `.github/workflows/tick.yml` also GETs the
+SkyCast alerts server's health route and emails (Resend) when it goes down or
+recovers — `alerts_watchdog.py`, in the background and time-boxed so it can
+never fail or delay the tick. Its key, the repo secret `RESEND_ALERTS_KEY`, is
+a send-only key made by `tools/watchdog-key-setup.sh`.

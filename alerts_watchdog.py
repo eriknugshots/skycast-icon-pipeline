@@ -16,6 +16,9 @@
 # The state moves on once the email is sent, or skipped for a missing key; a
 # send that fails leaves it where it was, so the next wake tries again.
 # main() never raises and always exits 0.
+# --health-url, --name and --fields point the same watchdog at another health
+# route (the tick runs a second one for the tile key job); the defaults are the
+# alerts check exactly, and each check keeps its own --state-file.
 import argparse
 import datetime as dt
 import json
@@ -58,18 +61,18 @@ def _reason(e):
     return str(reason) or type(reason).__name__
 
 
-def check(http):
+def check(http, health_url=HEALTH_URL, fields_wanted=FIELDS):
     """(healthy, cause, fields): cause says why not; fields are whatever of the
     health route's fields came back (none on a network error)."""
     try:
-        status, body = http("GET", HEALTH_URL, {"Accept": "application/json"}, None, HEALTH_TIMEOUT)
+        status, body = http("GET", health_url, {"Accept": "application/json"}, None, HEALTH_TIMEOUT)
     except Exception as e:
         return False, f"network error ({_reason(e)})", {}
     try:
         doc = json.loads(body.decode("utf-8", "replace"))
     except ValueError:
         doc = None
-    fields = {k: doc[k] for k in FIELDS if k in doc} if isinstance(doc, dict) else {}
+    fields = {k: doc[k] for k in fields_wanted if k in doc} if isinstance(doc, dict) else {}
     if status != 200:
         return False, f"HTTP {status}", fields
     if not isinstance(doc, dict):
@@ -93,8 +96,8 @@ def _value(fields, k):
     return v if isinstance(v, str) else json.dumps(v)
 
 
-def _fields_line(fields):
-    return " ".join(f"{k}={_value(fields, k)}" for k in FIELDS)
+def _fields_line(fields, fields_wanted=FIELDS):
+    return " ".join(f"{k}={_value(fields, k)}" for k in fields_wanted)
 
 
 def _hhmm(iso):
@@ -104,21 +107,21 @@ def _hhmm(iso):
         return None
 
 
-def compose(kind, cause, fields, now, down_since=None):
+def compose(kind, cause, fields, now, down_since=None, name="alerts", health_url=HEALTH_URL, fields_wanted=FIELDS):
     """(subject, plain text) for a "down" or "recovered" email."""
     if kind == "down":
-        subject = f"SkyCast alerts server down: {cause}"
-        head = f"The SkyCast alerts server's health check is not ok: {cause}."
+        subject = f"SkyCast {name} server down: {cause}"
+        head = f"The SkyCast {name} server's health check is not ok: {cause}."
     else:
-        subject = "SkyCast alerts server recovered"
+        subject = f"SkyCast {name} server recovered"
         since = _hhmm(down_since)
-        head = "The SkyCast alerts server's health check is ok again" + (
+        head = f"The SkyCast {name} server's health check is ok again" + (
             f" (this tick first saw it down at {since})." if since else ".")
     lines = [head, ""]
-    lines += [f"{k}: {_value(fields, k)}" for k in FIELDS]
+    lines += [f"{k}: {_value(fields, k)}" for k in fields_wanted]
     lines += ["",
               f"Checked: {now.strftime('%Y-%m-%d %H:%M UTC')}",
-              f"Health: {HEALTH_URL}",
+              f"Health: {health_url}",
               f"Logs: {LOGS_URL}",
               "",
               "Sent by the tick watchdog (eriknugshots/skycast-icon-pipeline, .github/workflows/tick.yml)."]
@@ -143,13 +146,13 @@ def send(http, key, subject, text):
     return False, f"HTTP {status} {str(doc.get('message', ''))[:200]}".rstrip()
 
 
-def wake(prev, key, http, now, log):
+def wake(prev, key, http, now, log, name="alerts", health_url=HEALTH_URL, fields_wanted=FIELDS):
     """One wake of the tick: check, log, maybe email. Returns the next state
     record {"state", "since"}."""
     prev = prev if isinstance(prev, dict) and prev.get("state") in (START, OK, DOWN) else {"state": START}
     state = prev["state"]
-    healthy, cause, fields = check(http)
-    log(f"watchdog: {'ok' if healthy else 'NOT OK, ' + cause} ({_fields_line(fields)})")
+    healthy, cause, fields = check(http, health_url, fields_wanted)
+    log(f"watchdog: {'ok' if healthy else 'NOT OK, ' + cause} ({_fields_line(fields, fields_wanted)})")
     new, kind = step(state, healthy)
     nxt = {"state": new, "since": prev.get("since") if new == state else now.isoformat(timespec="seconds")}
     if kind is None:
@@ -157,7 +160,8 @@ def wake(prev, key, http, now, log):
     if not key:
         log(f"watchdog: {KEY_ENV} is not set, not emailing \"{kind}\"")
         return nxt
-    subject, text = compose(kind, cause, fields, now, prev.get("since") if kind == "recovered" else None)
+    subject, text = compose(kind, cause, fields, now, prev.get("since") if kind == "recovered" else None,
+                            name, health_url, fields_wanted)
     sent, detail = send(http, key, subject, text)
     if sent:
         log(f"watchdog: emailed \"{kind}\" to {', '.join(RECIPIENTS)} ({detail})")
@@ -186,10 +190,15 @@ def main(argv=None, http=http_request, now=None, log=None):
     try:
         p = argparse.ArgumentParser()
         p.add_argument("--state-file", required=True)
+        p.add_argument("--health-url", default=HEALTH_URL)
+        p.add_argument("--name", default="alerts")
+        p.add_argument("--fields", default=",".join(FIELDS))
         a = p.parse_args(argv)
         now = now or dt.datetime.now(dt.timezone.utc)
         key = os.environ.get(KEY_ENV, "").strip()
-        save(a.state_file, wake(load(a.state_file), key, http, now, log))
+        fields = tuple(f.strip() for f in a.fields.split(",") if f.strip()) or FIELDS
+        save(a.state_file, wake(load(a.state_file), key, http, now, log,
+                                a.name, a.health_url, fields))
     except (Exception, SystemExit) as e:
         log(f"watchdog: skipped this wake ({type(e).__name__}: {e})")
     return 0

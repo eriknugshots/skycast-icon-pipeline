@@ -210,3 +210,63 @@ def test_main_carries_state_between_wakes_through_the_file(tmp_path, monkeypatch
         wd.main(["--state-file", path], http=http, now=T0 + dt.timedelta(minutes=10 * i), log=lambda _: None)
         sent += [e["subject"] for e in http.emails]
     assert sent == ["SkyCast alerts server down: ok:false", "SkyCast alerts server recovered"]
+
+
+# --- a second check: the tile key job ---------------------------------------
+
+TILES_URL = "https://sunset-prediction.vercel.app/api/tiles-health"
+TILES_FIELDS = "ok,newestKeyAgeH,lastRunAgeH,lastErrorKind"
+TILES_FAILING = {"ok": False, "newestKeyAgeH": 61, "lastRunAgeH": 26, "lastErrorKind": "google"}
+
+
+class TilesHttp(Http):
+    """Same stub, answering for the tiles health URL instead of the alerts one."""
+
+    def __call__(self, method, url, headers, body, timeout):
+        self.calls.append((method, url, headers, body, timeout))
+        answer = self.health if url == TILES_URL else self.resend
+        status, doc = answer
+        return status, json.dumps(doc).encode()
+
+
+def tiles_args(path):
+    return ["--state-file", str(path), "--health-url", TILES_URL, "--name", "tile keys",
+            "--fields", TILES_FIELDS]
+
+
+def test_a_down_tiles_check_sends_one_email_named_for_tile_keys(tmp_path, monkeypatch):
+    monkeypatch.setenv("RESEND_ALERTS_KEY", "re_test")
+    http, log = TilesHttp((200, TILES_FAILING)), []
+    assert wd.main(tiles_args(tmp_path / "t.json"), http=http, now=T0, log=log.append) == 0
+    assert [c[1] for c in http.calls][0] == TILES_URL
+    [email] = http.emails
+    assert "tile keys" in email["subject"] and "down" in email["subject"]
+    assert email["subject"] == "SkyCast tile keys server down: ok:false"
+    lines = email["text"].splitlines()
+    assert "newestKeyAgeH: 61" in lines and "lastRunAgeH: 26" in lines
+    assert "lastRunAgeMin: n/a" not in lines and not any(l.startswith("lastRunAgeMin") for l in lines)
+    assert f"Health: {TILES_URL}" in lines
+    assert "tile keys" in email["text"].splitlines()[0]
+    assert json.loads((tmp_path / "t.json").read_text())["state"] == wd.DOWN
+
+
+def test_the_tiles_check_recovers_with_its_own_name(tmp_path, monkeypatch):
+    monkeypatch.setenv("RESEND_ALERTS_KEY", "re_test")
+    path = tmp_path / "t.json"
+    sent = []
+    for i, doc in enumerate([TILES_FAILING, TILES_FAILING, {**TILES_FAILING, "ok": True}]):
+        http = TilesHttp((200, doc))
+        wd.main(tiles_args(path), http=http, now=T0 + dt.timedelta(minutes=10 * i), log=lambda _: None)
+        sent += [e["subject"] for e in http.emails]
+    assert sent == ["SkyCast tile keys server down: ok:false", "SkyCast tile keys server recovered"]
+
+
+def test_with_no_new_arguments_the_url_and_subject_are_exactly_as_before(tmp_path, monkeypatch):
+    monkeypatch.setenv("RESEND_ALERTS_KEY", "re_test")
+    http = down()
+    wd.main(["--state-file", str(tmp_path / "s.json")], http=http, now=T0, log=lambda _: None)
+    assert http.calls[0][1] == "https://sunset-prediction.vercel.app/api/alerts-health"
+    [email] = http.emails
+    assert email["subject"] == "SkyCast alerts server down: ok:false"
+    assert "lastRunAgeMin: 4" in email["text"].splitlines()
+    assert "Health: https://sunset-prediction.vercel.app/api/alerts-health" in email["text"].splitlines()

@@ -146,12 +146,17 @@ def send(http, key, subject, text):
     return False, f"HTTP {status} {str(doc.get('message', ''))[:200]}".rstrip()
 
 
-def wake(prev, key, http, now, log, name="alerts", health_url=HEALTH_URL, fields_wanted=FIELDS):
+def wake(prev, key, http, now, log, name="alerts", health_url=HEALTH_URL, fields_wanted=FIELDS, absent_ok=False):
     """One wake of the tick: check, log, maybe email. Returns the next state
-    record {"state", "since"}."""
+    record {"state", "since"}. absent_ok: a 404 means the route is not
+    deployed yet (a check added ahead of its server), so the wake logs it and
+    changes nothing; every other failure counts as before."""
     prev = prev if isinstance(prev, dict) and prev.get("state") in (START, OK, DOWN) else {"state": START}
     state = prev["state"]
     healthy, cause, fields = check(http, health_url, fields_wanted)
+    if absent_ok and cause == "HTTP 404":
+        log(f"watchdog: {name}: {health_url} is not deployed yet (404), nothing to watch")
+        return prev
     log(f"watchdog: {'ok' if healthy else 'NOT OK, ' + cause} ({_fields_line(fields, fields_wanted)})")
     new, kind = step(state, healthy)
     nxt = {"state": new, "since": prev.get("since") if new == state else now.isoformat(timespec="seconds")}
@@ -193,12 +198,13 @@ def main(argv=None, http=http_request, now=None, log=None):
         p.add_argument("--health-url", default=HEALTH_URL)
         p.add_argument("--name", default="alerts")
         p.add_argument("--fields", default=",".join(FIELDS))
+        p.add_argument("--absent-ok", action="store_true")
         a = p.parse_args(argv)
         now = now or dt.datetime.now(dt.timezone.utc)
         key = os.environ.get(KEY_ENV, "").strip()
         fields = tuple(f.strip() for f in a.fields.split(",") if f.strip()) or FIELDS
         save(a.state_file, wake(load(a.state_file), key, http, now, log,
-                                a.name, a.health_url, fields))
+                                a.name, a.health_url, fields, a.absent_ok))
     except (Exception, SystemExit) as e:
         log(f"watchdog: skipped this wake ({type(e).__name__}: {e})")
     return 0

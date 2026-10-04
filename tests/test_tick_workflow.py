@@ -100,7 +100,7 @@ def test_the_tick_loop_does_the_same_whatever_the_watchdog_does(tmp_path, wd_mod
     alerts = f"alerts_watchdog.py --state-file {runner_temp}/alerts-watchdog.json"
     tiles = (f"alerts_watchdog.py --state-file {runner_temp}/tiles-watchdog.json"
              " --health-url https://sunset-prediction.vercel.app/api/tiles-health"
-             " --name tile keys --fields ok,newestKeyAgeH,lastRunAgeH,lastErrorKind")
+             " --name tile keys --fields ok,newestKeyAgeH,lastRunAgeH,lastErrorKind --absent-ok")
     assert sorted(watchdog) == sorted([alerts, tiles] * wakes)
     if wd_mode != "ok":
         assert "watchdog: gave up (exit " in p.stdout

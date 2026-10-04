@@ -40,10 +40,13 @@ jobs:
           # a file in this job's temp dir, fresh for every tick.
           wd_state="${RUNNER_TEMP:-/tmp}/alerts-watchdog.json"
           rm -f "$wd_state" || true
+          wd_tiles_state="${RUNNER_TEMP:-/tmp}/tiles-watchdog.json"
+          rm -f "$wd_tiles_state" || true
           wd_pid=""
           while [ "$(date +%s)" -lt "$end" ]; do
             if [ -n "$wd_pid" ]; then wait "$wd_pid" 2>/dev/null || true; fi
             ( timeout -k 5 55 python alerts_watchdog.py --state-file "$wd_state" || echo "watchdog: gave up (exit $?), tick unaffected" ) &
+            ( timeout -k 5 55 python alerts_watchdog.py --state-file "$wd_tiles_state" --health-url https://sunset-prediction.vercel.app/api/tiles-health --name "tile keys" --fields ok,newestKeyAgeH,lastRunAgeH,lastErrorKind || echo "watchdog: gave up (exit $?), tick unaffected" ) &
             wd_pid=$!
             set +e
             python tick.py --pages-base "$PAGES_BASE"

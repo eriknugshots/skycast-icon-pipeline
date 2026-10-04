@@ -270,3 +270,26 @@ def test_with_no_new_arguments_the_url_and_subject_are_exactly_as_before(tmp_pat
     assert email["subject"] == "SkyCast alerts server down: ok:false"
     assert "lastRunAgeMin: 4" in email["text"].splitlines()
     assert "Health: https://sunset-prediction.vercel.app/api/alerts-health" in email["text"].splitlines()
+
+
+def test_absent_ok_treats_a_missing_route_as_nothing_to_watch(tmp_path, monkeypatch):
+    monkeypatch.setenv("RESEND_ALERTS_KEY", "re_test")
+    path, log = tmp_path / "t.json", []
+    http = TilesHttp((404, {"error": "not found"}))
+    assert wd.main(tiles_args(path) + ["--absent-ok"], http=http, now=T0, log=log.append) == 0
+    assert http.emails == []
+    assert any("not deployed yet" in line for line in log)
+
+
+def test_absent_ok_still_reports_every_other_failure(tmp_path, monkeypatch):
+    monkeypatch.setenv("RESEND_ALERTS_KEY", "re_test")
+    for answer in [(500, {}), (200, TILES_FAILING)]:
+        http = TilesHttp(answer)
+        wd.main(tiles_args(tmp_path / f"t{answer[0]}.json") + ["--absent-ok"], http=http, now=T0, log=lambda _: None)
+        assert len(http.emails) == 1
+
+
+def test_without_absent_ok_a_404_is_down():
+    http = Http((404, {}))
+    _, emails, _ = run_chain([http])
+    assert len(emails) == 1 and "HTTP 404" in emails[0]["subject"]

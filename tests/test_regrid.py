@@ -5,8 +5,10 @@ from pathlib import Path
 import numpy as np
 import netCDF4
 import pytest
+from pipeline.squares import NX, NY
 from pipeline.regrid import remap_command, world_from_netcdf, KIT_URL, KIT_DIR
 from pipeline.regrid import LatticeRemap, copy_command, lattice_levels, levels_from_netcdf
+from pipeline.regrid import world_values_from_netcdf, regrid_values
 
 
 def test_remap_command_uses_the_dwd_kit():
@@ -67,6 +69,56 @@ def test_world_from_netcdf_scale_turns_a_fraction_into_percent(tmp_path):
     _write_nc(p, vals, name="FR_LAND")
     assert world_from_netcdf(p, scale=100)[3, 3] == 50
     assert world_from_netcdf(p)[3, 3] == 0            # unscaled, 0.5 rounds to 0
+
+
+# ---- A physical field: kg/m² straight through, no clip, no scale ------------
+
+
+def test_values_keep_physical_units(tmp_path):
+    vals = np.full((NY, NX), 0.0273, dtype=np.float32)
+    vals[0, 0] = -0.001                 # a negative remap overshoot: kept, not clipped to 0
+    vals[1, 1] = np.nan
+    vals[2, 2] = -1.0                   # the file's fill value: masked
+    vals[3, 3] = 3.5
+    vals[4, 4] = 250.0                  # past 100: a percent grid would clip it
+    p = tmp_path / "thick.nc"
+    _write_nc(p, vals, name="param8.6.0")
+    world = world_values_from_netcdf(p)
+    assert world.shape == (NY, NX) and world.dtype == np.float32
+    assert abs(world[7, 7] - 0.0273) < 1e-6
+    assert abs(world[0, 0] - (-0.001)) < 1e-6
+    assert np.isnan(world[1, 1]) and np.isnan(world[2, 2])
+    assert world[3, 3] == 3.5 and world[4, 4] == 250.0
+    assert int(np.isnan(world).sum()) == 2
+
+
+def test_regrid_values_runs_cdo_and_cleans_up(tmp_path):
+    src = tmp_path / "icon_global_icosahedral_single-level_2026092700_005_TQI_DIA.grib2.bz2"
+    src.write_bytes(bz2.compress(b"grib"))
+    seen = []
+
+    def fake_cdo(cmd, check):
+        seen.append(cmd)
+        assert cmd[:-2] == remap_command("/kit", "a", "b")[:-2]
+        assert Path(cmd[-2]).read_bytes() == b"grib"                       # unpacked
+        _write_nc(cmd[-1], np.full((NY, NX), 0.25, dtype=np.float32), name="param8.6.0")
+
+    world = regrid_values(src, "/kit", tmp_path, run=fake_cdo)
+    assert len(seen) == 1 and world.dtype == np.float32 and world[10, 10] == 0.25
+    assert [p.name for p in tmp_path.iterdir()] == [src.name]              # grib and nc removed
+
+
+def test_regrid_values_leaves_the_work_dir_clean_when_cdo_fails(tmp_path):
+    src = tmp_path / "icon_global_icosahedral_single-level_2026092700_005_TQC_DIA.grib2.bz2"
+    src.write_bytes(bz2.compress(b"grib"))
+
+    def failing_cdo(cmd, check):
+        Path(cmd[-1]).write_bytes(b"half-written")           # cdo died after starting its output
+        raise subprocess.CalledProcessError(1, cmd)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        regrid_values(src, "/kit", tmp_path, run=failing_cdo)
+    assert [p.name for p in tmp_path.iterdir()] == [src.name]
 
 
 # ---- The column lattice: DWD's weights applied at every stride-th point ----

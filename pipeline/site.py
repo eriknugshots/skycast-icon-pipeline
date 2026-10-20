@@ -22,7 +22,16 @@ def columns_path(run):
     return f"columns/{run_id(run)}"
 
 
-def build_manifest(run, built, step_hours, squares, history_hours, complete=True, tail=None, columns=None):
+def blocks_path(run):
+    return f"blocks/{run_id(run)}"
+
+
+def thick_path(run):
+    return f"thick/{run_id(run)}"
+
+
+def build_manifest(run, built, step_hours, squares, history_hours, complete=True, tail=None, columns=None,
+                   blocks=None, thick=None):
     out = {
         "run": run_iso(run),
         # False for a test build (some steps, some squares). Only a complete
@@ -45,6 +54,14 @@ def build_manifest(run, built, step_hours, squares, history_hours, complete=True
         # copy of the manifest names it — the columns are not on Pages.
         # Builds that predate it never read this key.
         "columns": columns,
+        # The same squares as day blocks (ICL2, see pipeline/blocks.py): the
+        # folder under which <square>.icb lives, or None. Blob only, like the
+        # columns; the ICL1 files above stay for the builds that read them.
+        "blocks": blocks,
+        # Cloud thickness (ICT1, cloud ice and water per square on the same
+        # hours as the squares): {format, run, runMs, tiles}, or None. Blob
+        # only as well. See run_build.build_thick.
+        "thick": thick,
         "attribution": ATTRIBUTION,
     }
     return json.dumps(out, separators=(",", ":"))

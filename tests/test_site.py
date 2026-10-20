@@ -60,3 +60,18 @@ def test_manifest_carries_the_columns_or_null_and_old_keys_are_unchanged():
     assert m["columns"] == cols
     # Everything an older app build reads is exactly what it was without columns.
     assert {k: v for k, v in m.items() if k != "columns"} == {k: v for k, v in plain.items() if k != "columns"}
+
+
+def test_manifest_carries_the_blocks_and_thickness_or_null():
+    from pipeline.site import blocks_path, thick_path
+    run = dt.datetime(2026, 10, 2, 0, tzinfo=UTC)
+    assert blocks_path(run) == "blocks/2026100200"
+    assert thick_path(run) == "thick/2026100200"
+    plain = json.loads(build_manifest(run, run, [1, 2], ["N40W125"], 0))
+    assert plain["blocks"] is None and plain["thick"] is None
+    thick = {"tiles": "thick/2026100200"}
+    m = json.loads(build_manifest(run, run, [1, 2], ["N40W125"], 0, blocks=blocks_path(run), thick=thick))
+    assert m["blocks"] == "blocks/2026100200" and m["thick"] == thick
+    # Everything an older app build reads is exactly what it was without them.
+    assert {k: v for k, v in m.items() if k not in ("blocks", "thick")} == \
+        {k: v for k, v in plain.items() if k not in ("blocks", "thick")}

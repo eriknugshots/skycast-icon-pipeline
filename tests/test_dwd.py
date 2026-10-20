@@ -120,3 +120,36 @@ def test_missing_column_files_names_what_the_listings_lack():
     per_step = len(COLUMN_PFIELDS) * len(COLUMN_PLEVELS) + len(COLUMN_MLEVELS) + len(COLUMN_SFIELDS)
     assert sum(len(v) for v in files.values()) == 2 * per_step + 1 + len(COLUMN_HHL_LEVELS)
     assert len(set(n for v in files.values() for n in v)) == sum(len(v) for v in files.values())
+
+
+def test_thick_fields():
+    from pipeline.dwd import THICK_FIELDS, missing_thick_files
+    assert THICK_FIELDS == ["TQI_DIA", "TQC_DIA"]
+    run = dt.datetime(2026, 9, 27, 0, tzinfo=dt.timezone.utc)
+    assert file_url(run, 5, "TQI_DIA").endswith(
+        "/00/tqi_dia/icon_global_icosahedral_single-level_2026092700_005_TQI_DIA.grib2.bz2")
+    steps = [0, 1, 2]
+    ice = "".join(f'<a href="{file_name(run, s, "TQI_DIA")}">x</a>\n' for s in steps)
+    asked = []
+
+    def listing(hh, field):
+        asked.append((hh, field))
+        return ice if field == "TQI_DIA" else ""
+
+    assert missing_thick_files(listing, run, steps) == [file_name(run, s, "TQC_DIA") for s in steps]
+    assert sorted(asked) == [("00", "TQC_DIA"), ("00", "TQI_DIA")]
+    assert missing_thick_files(lambda hh, field: ice.replace("TQI_DIA", field), run, steps) == []
+
+
+def test_thickness_never_decides_the_run():
+    # Cover files alone make a run complete: DWD may lag on thickness, and the
+    # build waits for it separately, so it must not hold back the cover.
+    run00 = dt.datetime(2026, 9, 27, 0, tzinfo=dt.timezone.utc)
+
+    def listing(hh, field):
+        if hh != "00":
+            return ""
+        assert field in FIELDS                      # thickness is never asked for here
+        return "".join(f'<a href="{file_name(run00, s, field)}">x</a>\n' for s in STEPS)
+
+    assert newest_complete_run(listing) == run00

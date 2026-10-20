@@ -38,3 +38,12 @@ test('the column feed folder is kept like the tail; a null or old-style manifest
   // A build that published no columns deletes the older column folders.
   assert.deepEqual(pathsToDelete(paths, { current: cur, previous: prev }), paths);
 });
+
+test('the blocks and thickness folders are kept like the others; a manifest without them has none', () => {
+  const m = { tiles: 'tiles/A', blocks: 'blocks/A', thick: { tiles: 'thick/A' }, tail: null, columns: null };
+  assert.deepEqual(manifestFolders(m), ['tiles/A/', 'blocks/A/', 'thick/A/']);
+  assert.deepEqual(manifestFolders({ tiles: 'tiles/A', blocks: null, thick: null }), ['tiles/A/']);
+  const old = { tiles: 'tiles/Z' };
+  const paths = ['blocks/A/x.icb', 'thick/A/x.ict', 'tiles/Z/x.icl', 'blocks/Q/x.icb', 'thick/Q/x.ict'];
+  assert.deepEqual(pathsToDelete(paths, { current: m, previous: old }), ['blocks/Q/x.icb', 'thick/Q/x.ict']);
+});

@@ -318,8 +318,8 @@ def build_thick(blob_dir, state, work, deps, kit, run, steps, names, workers, ho
 
         def job(step, field):
             dst = Path(work) / dwd.file_name(run, step, field)
-            deps.download(dwd.file_url(run, step, field), dst)
             try:
+                deps.download(dwd.file_url(run, step, field), dst)
                 # To bytes here, in the worker: a float32 world is 16.6 MB, and
                 # 153 steps × 2 fields of them would be 5 GB on a 16 GB runner
                 # (bytes: 1.2 GB).

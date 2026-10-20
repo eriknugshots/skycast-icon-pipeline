@@ -95,6 +95,8 @@ def test_a_build_writes_squares_manifest_and_state(tmp_path):
     assert sq["cube"][6, 2, 0, 0] == 6 + 2                # step 6, field CLCH
     assert sorted(calls["regrids"])[:2] == [(0, "CLCH"), (0, "CLCL")]
     assert sum(1 for u in calls["downloads"] if any(f"_{f}." in u for f in FIELDS)) == 7 * 4
+    # The cover and the thickness, and nothing else (no column files are listed).
+    assert len(calls["downloads"]) == 7 * (len(FIELDS) + len(THICK_FIELDS))
     # The run's hours 0-5 are saved for the next build's history.
     assert (tmp_path / "state" / "history" / "2026092700.npz").exists()
 
@@ -454,16 +456,16 @@ def _fake_lattice_levels(paths, kit, work, stride):
     return out
 
 
-def _deps_with_columns(tmp_path, steps, column_steps=None):
-    deps, calls = _fake_deps(tmp_path)
+def _deps_with_columns(tmp_path, steps, column_steps=None, **fake):
+    deps, calls = _fake_deps(tmp_path, **fake)
     files = column_files(RUN, steps if column_steps is None else column_steps)
 
     run = RUN
 
     def listing(hh, field):
-        # The cloud fields as _fake_deps lists them (under 00); the column
-        # fields under their run's own hour, as DWD does.
-        if field in dwd_fields():
+        # The cloud and thickness fields as _fake_deps lists them (under 00);
+        # the column fields under their run's own hour, as DWD does.
+        if field in dwd_fields() or field in THICK_FIELDS:
             return _listing(run, field) if hh == "00" else ""
         if hh != f"{run:%H}":
             return ""
@@ -573,7 +575,7 @@ def test_column_files_not_yet_listed_wait_then_publish_without_columns(tmp_path,
     assert _columns_build(tmp_path, deps, steps) == run_build.BUILT
     m = json.loads((tmp_path / "blob" / "manifest.json").read_text())
     assert m["columns"] is None
-    assert sum(calls["sleeps"]) >= run_build.COLUMN_WAIT_S
+    assert sum(calls["sleeps"]) == run_build.COLUMN_WAIT_S
     assert (tmp_path / "site" / m["tiles"] / "N40W125.icl").exists()
     assert not (tmp_path / "blob" / "columns").exists()
     assert "::warning::columns" in capsys.readouterr().out
@@ -592,6 +594,23 @@ def test_a_column_failure_never_fails_the_build(tmp_path, capsys):
     assert m["columns"] is None
     assert not (tmp_path / "blob" / "columns").exists()
     assert "::warning::columns failed" in capsys.readouterr().out
+
+
+def test_a_thickness_failure_still_publishes_the_columns(tmp_path, capsys):
+    def thick_value(step, field):
+        if (step, field) == (1, "TQC_DIA"):
+            raise OSError("cdo died")
+        return THICK_KG[field]
+    steps = [0, 1]
+    deps, _ = _deps_with_columns(tmp_path, steps, thick_value=thick_value)
+    assert _columns_build(tmp_path, deps, steps) == run_build.BUILT
+    m = json.loads((tmp_path / "blob" / "manifest.json").read_text())
+    assert m["thick"] is None and not (tmp_path / "blob" / "thick").exists()
+    assert m["columns"]["tiles"] == "columns/2026092700"
+    d = decode_columns((tmp_path / "blob" / m["columns"]["tiles"] / "N40W125.icc").read_bytes())
+    assert d["step_hours"] == [hour_of(RUN) + s for s in steps]
+    assert _value(d, columns.T, columns.HEIGHT_AGL_M, 2, s=1) == pytest.approx(283.15 + 1 - 273.15, abs=TOL_T)
+    assert "::warning::thickness failed" in capsys.readouterr().out
 
 
 def test_column_history_comes_from_state(tmp_path):
@@ -629,10 +648,13 @@ def test_the_columns_go_to_blob_only_and_never_touch_the_pages_budget(tmp_path, 
     assert not (site / "columns").exists() and pages["columns"] is None
     # Blob: the columns, and a manifest equal to Pages' but for its columns key.
     assert run_build._dir_bytes(blob / feed["columns"]["tiles"]) > 0
-    # (the blocks are Blob-only too: the manifests differ in those two keys alone)
-    assert {k: v for k, v in feed.items() if k not in ("columns", "blocks")} == \
-        {k: v for k, v in pages.items() if k not in ("columns", "blocks")}
-    assert sorted(p.relative_to(blob).parts[0] for p in blob.iterdir()) == ["blocks", "columns", "manifest.json"]
+    # (the blocks and the thickness are Blob-only too: the manifests differ in those keys alone)
+    blob_only = ("columns", "blocks", "thick")
+    assert pages["thick"] is None and feed["thick"] is not None
+    assert {k: v for k, v in feed.items() if k not in blob_only} == \
+        {k: v for k, v in pages.items() if k not in blob_only}
+    assert sorted(p.relative_to(blob).parts[0] for p in blob.iterdir()) == \
+        ["blocks", "columns", "manifest.json", "thick"]
     clouds = run_build._dir_bytes(site / "tiles")
     capsys.readouterr()
     # A budget the clouds just fit: however big the columns, the squares stay in 2 % steps.

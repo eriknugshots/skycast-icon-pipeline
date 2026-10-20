@@ -19,7 +19,7 @@ from collections import namedtuple
 from pathlib import Path
 import numpy as np
 
-from pipeline import columns, dwd, history, live, site
+from pipeline import blocks, columns, dwd, history, live, site
 from pipeline.encode import encode_square, quantize, FIELD_COUNT
 from pipeline.regrid import ensure_kit, regrid, lattice_levels, regrid_values
 from pipeline.squares import all_squares, parse_name, slice_square, NX, NY
@@ -160,13 +160,18 @@ def build(site, state, work, deps, pages_base, steps=None, squares=None, workers
         site_bytes = size + _dir_bytes(site / site_tail_tiles_root())
     print(f"site: {site_bytes / 1e6:.0f} MB in squares and tail")
     n_past = len(past)
+    # The day blocks go to Blob only, in QUANT_STEP steps even when Pages had
+    # to fall back to 4 %: their size is Blob's to carry, not Pages' budget.
+    blob.mkdir(parents=True, exist_ok=True)
+    block_bytes = write_blocks(blob, run, names, stacks, hours)
+    print(f"blocks: {len(names)} squares, {block_bytes / 1e6:.0f} MB")
     stacks.clear()                       # ~2.5 GB of cloud arrays back before the columns
     past.clear()
-    # Pages carries no columns, so its manifest names none.
+    # Pages carries neither the columns nor the blocks, so its manifest names none.
     (site / "manifest.json").write_text(site_manifest(run, deps.now(), hours, names, n_past, full, tail, None))
     cols = build_columns(blob, state, work, deps, kit, run, steps, names, workers)
-    blob.mkdir(parents=True, exist_ok=True)
-    (blob / "manifest.json").write_text(site_manifest(run, deps.now(), hours, names, n_past, full, tail, cols))
+    (blob / "manifest.json").write_text(site_manifest(run, deps.now(), hours, names, n_past, full, tail, cols,
+                                                      blocks=site_blocks(run)))
     print(f"built {len(names)} squares, {len(hours)} steps ({n_past} history)")
     return BUILT
 
@@ -195,8 +200,28 @@ def site_tiles(run):
     return site.tiles_path(run)
 
 
-def site_manifest(run, built, hours, names, history_steps, complete, tail=None, columns=None):
-    return site.build_manifest(run, built, hours, names, history_steps, complete, tail, columns)
+def site_blocks(run):
+    return site.blocks_path(run)
+
+
+def site_manifest(run, built, hours, names, history_steps, complete, tail=None, columns=None,
+                  blocks=None, thick=None):
+    return site.build_manifest(run, built, hours, names, history_steps, complete, tail, columns, blocks, thick)
+
+
+def write_blocks(blob_dir, run, names, stacks, hours):
+    """One .icb (ICL2) per square under blocks/<run>/, cut from the same
+    stacks as the squares; returns the bytes written."""
+    out = Path(blob_dir) / site_blocks(run)
+    out.mkdir(parents=True, exist_ok=True)
+    total = 0
+    for name in names:
+        lat, lon = parse_name(name)
+        cube = np.stack([slice_square(arr, lat, lon) for _, arr in stacks])
+        data = blocks.encode_blocks(b"ICL2", lat, lon, hours, quantize(cube, QUANT_STEP))
+        (out / f"{name}.icb").write_bytes(data)
+        total += len(data)
+    return total
 
 
 def site_tail_tiles(run):

@@ -2,8 +2,9 @@ import datetime as dt
 import json
 import numpy as np
 from pathlib import Path
+from pipeline.blocks import decode_blocks
 from pipeline.dwd import STEPS, FIELDS, TAIL_STEPS, file_name
-from pipeline.encode import decode_square
+from pipeline.encode import decode_square, quantize
 from pipeline.history import save_run_head, hour_of, HEAD_STEPS
 from pipeline.squares import NX, NY
 import pytest
@@ -180,6 +181,43 @@ def test_over_the_size_budget_the_squares_are_rewritten_in_4_percent_steps(tmp_p
     sq = decode_square((tmp_path / "site" / m["tiles"] / "N40W125.icl").read_bytes())
     assert int(sq["cube"].max()) == 12
     assert "::warning::" in capsys.readouterr().out
+
+
+def _blocks_build(tmp_path, steps, value, squares=None):
+    deps, _ = _fake_deps(tmp_path, world_value=value)
+    rc = run_build.build(site=tmp_path / "site", state=tmp_path / "state", work=tmp_path / "work",
+                         deps=deps, pages_base=None, steps=steps, squares=squares)
+    assert rc == run_build.BUILT
+    return tmp_path / "site", tmp_path / "blob"
+
+
+def test_blocks_go_to_blob_with_the_same_values_as_the_squares(tmp_path):
+    site, blob = _blocks_build(tmp_path, list(range(7)), lambda s, f: min(100, s + FIELDS.index(f)),
+                               squares=["N40W125"])
+    feed = json.loads((blob / "manifest.json").read_text())
+    assert feed["blocks"] == "blocks/2026092700"
+    m = json.loads((site / "manifest.json").read_text())
+    icl = decode_square((site / m["tiles"] / "N40W125.icl").read_bytes())
+    icb = decode_blocks((blob / "blocks/2026092700/N40W125.icb").read_bytes(), 4)
+    assert icb["magic"] == b"ICL2"
+    assert icb["step_hours"] == icl["step_hours"]
+    assert np.array_equal(icb["cube"], icl["cube"])
+
+
+def test_pages_gets_no_blocks(tmp_path):
+    site, _ = _blocks_build(tmp_path, [0, 1], lambda s, f: 0, squares=["N40W125"])
+    assert not (site / "blocks").exists()
+    assert json.loads((site / "manifest.json").read_text())["blocks"] is None
+
+
+def test_blocks_use_the_2_percent_step_even_over_the_pages_budget(tmp_path, monkeypatch):
+    monkeypatch.setattr(run_build, "SITE_BUDGET_BYTES", 1)
+    site, blob = _blocks_build(tmp_path, [0], lambda s, f: 13)
+    m = json.loads((site / "manifest.json").read_text())
+    icl = decode_square((site / m["tiles"] / "N40W125.icl").read_bytes())
+    icb = decode_blocks((blob / "blocks/2026092700/N40W125.icb").read_bytes(), 4)
+    assert int(icl["cube"].max()) == int(quantize(np.full(1, 13, np.uint8), 4)[0]) == 12
+    assert int(icb["cube"].max()) == int(icb["cube"].min()) == 14
 
 
 def test_a_partial_live_manifest_does_not_stop_the_full_build(tmp_path):
@@ -476,8 +514,10 @@ def test_the_columns_go_to_blob_only_and_never_touch_the_pages_budget(tmp_path, 
     assert not (site / "columns").exists() and pages["columns"] is None
     # Blob: the columns, and a manifest equal to Pages' but for its columns key.
     assert run_build._dir_bytes(blob / feed["columns"]["tiles"]) > 0
-    assert {k: v for k, v in feed.items() if k != "columns"} == {k: v for k, v in pages.items() if k != "columns"}
-    assert sorted(p.relative_to(blob).parts[0] for p in blob.iterdir()) == ["columns", "manifest.json"]
+    # (the blocks are Blob-only too: the manifests differ in those two keys alone)
+    assert {k: v for k, v in feed.items() if k not in ("columns", "blocks")} == \
+        {k: v for k, v in pages.items() if k not in ("columns", "blocks")}
+    assert sorted(p.relative_to(blob).parts[0] for p in blob.iterdir()) == ["blocks", "columns", "manifest.json"]
     clouds = run_build._dir_bytes(site / "tiles")
     capsys.readouterr()
     # A budget the clouds just fit: however big the columns, the squares stay in 2 % steps.

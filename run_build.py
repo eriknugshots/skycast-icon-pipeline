@@ -19,7 +19,7 @@ from collections import namedtuple
 from pathlib import Path
 import numpy as np
 
-from pipeline import blocks, columns, dwd, history, live, site
+from pipeline import blocks, columns, dwd, history, live, site, thick
 from pipeline.encode import encode_square, quantize, FIELD_COUNT
 from pipeline.regrid import ensure_kit, regrid, lattice_levels, regrid_values
 from pipeline.squares import all_squares, parse_name, slice_square, NX, NY
@@ -70,10 +70,10 @@ def live_complete_run(deps, pages_base):
 
 def build(site, state, work, deps, pages_base, steps=None, squares=None, workers=None, blob=None):
     """site: the Pages tree (squares, tail, manifest). blob: files for Vercel
-    Blob only — the column feed and a manifest that names it (default: a
-    `blob` directory beside `site`). publish/blob.mjs uploads site, then
-    blob over it; Pages never sees blob, so the columns never count against
-    its 1 GB."""
+    Blob only — the day blocks, the thickness, the column feed and a manifest
+    that names them (default: a `blob` directory beside `site`).
+    publish/blob.mjs uploads site, then blob over it; Pages never sees blob,
+    so none of them count against its 1 GB."""
     run = dwd.newest_complete_run(deps.listing)
     if run is None:
         print("no complete run on DWD yet")
@@ -167,11 +167,12 @@ def build(site, state, work, deps, pages_base, steps=None, squares=None, workers
     print(f"blocks: {len(names)} squares, {block_bytes / 1e6:.0f} MB")
     stacks.clear()                       # ~2.5 GB of cloud arrays back before the columns
     past.clear()
-    # Pages carries neither the columns nor the blocks, so its manifest names none.
+    # Pages carries none of the columns, blocks or thickness, so its manifest names none.
     (site / "manifest.json").write_text(site_manifest(run, deps.now(), hours, names, n_past, full, tail, None))
+    thickness = build_thick(blob, state, work, deps, kit, run, steps, names, workers, hours)
     cols = build_columns(blob, state, work, deps, kit, run, steps, names, workers)
     (blob / "manifest.json").write_text(site_manifest(run, deps.now(), hours, names, n_past, full, tail, cols,
-                                                      blocks=site_blocks(run)))
+                                                      blocks=site_blocks(run), thick=thickness))
     print(f"built {len(names)} squares, {len(hours)} steps ({n_past} history)")
     return BUILT
 
@@ -269,6 +270,88 @@ def build_tail(site_dir, work, deps, kit, names, workers):
             "stepsMs": [h * 3600 * 1000 for h in hours], "tiles": site_tail_tiles(run)}
 
 
+# ---- Cloud thickness (ICT1, pipeline/blocks.py) -----------------------------
+# DWD lists TQI_DIA/TQC_DIA beside the cover fields but they never decide
+# whether a run is complete (dwd.THICK_FIELDS): wait this long for them, then
+# publish the clouds without thickness rather than hold the feed back.
+THICK_WAIT_S = 15 * 60
+
+
+def site_thick_root():
+    return "thick"
+
+
+def site_thick(run):
+    return site.thick_path(run)
+
+
+def write_thick(blob_dir, run, names, hours, stacks, workers=1):
+    """One .ict per square under thick/<run>/; returns the bytes written.
+    zlib releases the GIL, so squares encode in parallel threads."""
+    out = Path(blob_dir) / site_thick(run)
+    out.mkdir(parents=True, exist_ok=True)
+
+    def one(name):
+        lat, lon = parse_name(name)
+        cube = np.stack([slice_square(arr, lat, lon) for arr in stacks])
+        data = blocks.encode_blocks(b"ICT1", lat, lon, hours, cube)
+        (out / f"{name}.ict").write_bytes(data)
+        return len(data)
+
+    with cf.ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        return sum(pool.map(one, names))
+
+
+def build_thick(blob_dir, state, work, deps, kit, run, steps, names, workers, hours):
+    """Cloud ice and water per square (thick.thick_bytes), one .ict under
+    thick/<run>/ on Blob, over exactly `hours` — the squares' hours, history
+    first — so the app reads both files by one index. An hour no thickness
+    covers (before its history began) is all MISSING. Returns the manifest's
+    `thick` entry, or None; a failure here never fails the build — the app
+    draws the cover without thickness."""
+    t0 = time.monotonic()
+    shape = (len(dwd.THICK_FIELDS), NY, NX)
+    try:
+        if not _wait_for_files(deps, run, "thickness", THICK_WAIT_S,
+                               lambda: dwd.missing_thick_files(deps.listing, run, steps)):
+            return None
+
+        def job(step, field):
+            dst = Path(work) / dwd.file_name(run, step, field)
+            deps.download(dwd.file_url(run, step, field), dst)
+            try:
+                # To bytes here, in the worker: a float32 world is 16.6 MB, and
+                # 153 steps × 2 fields of them would be 5 GB on a 16 GB runner
+                # (bytes: 1.2 GB).
+                return step, field, thick.thick_bytes(deps.regrid_values(dst, kit, work))
+            finally:
+                dst.unlink(missing_ok=True)
+
+        got = {}
+        with cf.ThreadPoolExecutor(max_workers=workers) as pool:
+            for step, field, b in pool.map(lambda sf: job(*sf), [(s, f) for s in steps for f in dwd.THICK_FIELDS]):
+                got[(step, field)] = b
+        base = history.hour_of(run)
+        own = {base + s: np.stack([got.pop((s, f)) for f in dwd.THICK_FIELDS]) for s in steps}
+        past = dict(history.load_history_steps(state, run, sub="thick", shape=shape))
+        n_past = sum(1 for h in hours if h in past and h not in own)
+        missing = np.full(shape, thick.MISSING, dtype=np.uint8)
+        stacks = [own.get(h, past.get(h, missing)) for h in hours]
+        head_steps = [s for s in range(history.HEAD_STEPS) if s in steps]
+        if len(head_steps) == history.HEAD_STEPS:
+            history.save_run_head(state, run, np.stack([own[base + s] for s in head_steps]), sub="thick")
+            history.prune(state, dwd.run_id(run), sub="thick")
+        total = write_thick(blob_dir, run, names, hours, stacks, workers)
+    except Exception as e:
+        print(f"::warning::thickness failed: {type(e).__name__}: {e}")
+        shutil.rmtree(Path(blob_dir) / site_thick_root(), ignore_errors=True)
+        return None
+    print(f"thickness: {len(names)} squares, {len(hours)} steps ({n_past} history), "
+          f"{total / 1e6:.1f} MB, {time.monotonic() - t0:.0f} s")
+    return {"format": "ICT1", "run": dwd.run_iso(run), "runMs": int(run.timestamp() * 1000),
+            "tiles": site_thick(run)}
+
+
 # ---- The column feed (docs/column-feed-design.md) ---------------------------
 # Every COLUMN_STRIDE-th node of the 0.125° grid: 2 → 0.25°, 21 nodes a side.
 # Chosen on measured interpolation error near the ground (design doc, "Node
@@ -344,18 +427,25 @@ def t80_weights(hhl, hsurf):
     return {lv: np.where(bad, np.nan, w[lv]) for lv in levels}
 
 
-def _wait_for_column_files(deps, run, steps):
+def _wait_for_files(deps, run, what, wait_s, missing_now):
+    """Poll DWD's listing every COLUMN_POLL_S until `missing_now()` names no
+    file (True) or `wait_s` has passed (False, with a warning)."""
     waited = 0
     while True:
-        missing = dwd.missing_column_files(deps.listing, run, steps)
+        missing = missing_now()
         if not missing:
             return True
-        if waited >= COLUMN_WAIT_S:
-            print(f"::warning::columns: {len(missing)} files of run {dwd.run_iso(run)} still not listed "
-                  f"after {waited // 60} min (first: {missing[0]}) — publishing without columns")
+        if waited >= wait_s:
+            print(f"::warning::{what}: {len(missing)} files of run {dwd.run_iso(run)} still not listed "
+                  f"after {waited // 60} min (first: {missing[0]}) — publishing without {what}")
             return False
         deps.sleep(COLUMN_POLL_S)
         waited += COLUMN_POLL_S
+
+
+def _wait_for_column_files(deps, run, steps):
+    return _wait_for_files(deps, run, "columns", COLUMN_WAIT_S,
+                           lambda: dwd.missing_column_files(deps.listing, run, steps))
 
 
 # Seconds spent downloading and remapping column files, summed over the
@@ -507,7 +597,8 @@ def build_columns(blob_dir, state, work, deps, kit, run, steps, names, workers, 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--site-dir", default="site")
-    ap.add_argument("--blob-dir", default="blob", help="files for Vercel Blob only (the column feed)")
+    ap.add_argument("--blob-dir", default="blob",
+                    help="files for Vercel Blob only (day blocks, thickness, the column feed)")
     ap.add_argument("--state-dir", default="state")
     ap.add_argument("--work-dir", default="work")
     ap.add_argument("--pages-base", default=None)

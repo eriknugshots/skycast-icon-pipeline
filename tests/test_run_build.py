@@ -3,7 +3,7 @@ import json
 import numpy as np
 from pathlib import Path
 from pipeline.blocks import decode_blocks
-from pipeline.dwd import STEPS, FIELDS, TAIL_STEPS, file_name
+from pipeline.dwd import STEPS, FIELDS, TAIL_STEPS, THICK_FIELDS, file_name, _NAME
 from pipeline.encode import decode_square, quantize
 from pipeline.history import save_run_head, hour_of, HEAD_STEPS
 from pipeline.squares import NX, NY
@@ -30,8 +30,14 @@ def _no_columns(paths, kit, work, stride):
     raise AssertionError("these listings carry no column files: no column build")
 
 
-def _fake_deps(tmp_path, world_value=lambda step, field: 0, prev_manifest=None):
-    calls = {"downloads": [], "regrids": [], "sleeps": []}
+# Cloud ice and water in kg/m² as the fake thickness files hold them: 27 g/m²
+# of ice and 100 g/m² of water, bytes 99 and 138 (tests/test_thick.py).
+THICK_KG = {"TQI_DIA": 0.027, "TQC_DIA": 0.1}
+
+
+def _fake_deps(tmp_path, world_value=lambda step, field: 0, prev_manifest=None,
+               thick_value=lambda step, field: THICK_KG[field]):
+    calls = {"downloads": [], "regrids": [], "regrids_values": [], "sleeps": []}
 
     def listing(hh, field):
         return _listing(RUN, field) if hh == "00" else ""
@@ -52,10 +58,17 @@ def _fake_deps(tmp_path, world_value=lambda step, field: 0, prev_manifest=None):
         calls["regrids"].append((step, field))
         return np.full((NY, NX), world_value(step, field), dtype=np.uint8)
 
+    def regrid_values(grib_bz2, kit, work):
+        _, step, field = _NAME.fullmatch(Path(grib_bz2).name).groups()
+        step = int(step)
+        calls["regrids_values"].append((step, field))
+        return np.full((NY, NX), thick_value(step, field), dtype=np.float32)
+
     return run_build.Deps(listing=listing, fetch_text=fetch_text, download=download,
                           regrid=regrid, ensure_kit=lambda work: Path("/kit"),
                           now=lambda: dt.datetime(2026, 9, 27, 3, tzinfo=UTC),
-                          lattice_levels=_no_columns, sleep=lambda s: calls["sleeps"].append(s)), calls
+                          lattice_levels=_no_columns, sleep=lambda s: calls["sleeps"].append(s),
+                          regrid_values=regrid_values), calls
 
 
 def test_early_exit_when_the_site_already_has_this_run(tmp_path, capsys):
@@ -81,7 +94,7 @@ def test_a_build_writes_squares_manifest_and_state(tmp_path):
     assert sq["cube"].shape == (7, 4, 41, 41)
     assert sq["cube"][6, 2, 0, 0] == 6 + 2                # step 6, field CLCH
     assert sorted(calls["regrids"])[:2] == [(0, "CLCH"), (0, "CLCL")]
-    assert len(calls["downloads"]) == 7 * 4
+    assert sum(1 for u in calls["downloads"] if any(f"_{f}." in u for f in FIELDS)) == 7 * 4
     # The run's hours 0-5 are saved for the next build's history.
     assert (tmp_path / "state" / "history" / "2026092700.npz").exists()
 
@@ -285,6 +298,108 @@ def test_a_test_build_makes_no_tail(tmp_path):
     assert rc == run_build.BUILT
     assert json.loads((tmp_path / "site" / "manifest.json").read_text())["tail"] is None
     assert not any("_123_" in u for u in calls["downloads"])
+
+
+# ---- Cloud thickness ----------------------------------------------------------
+# The fake files hold THICK_KG everywhere: ice byte 99, water byte 138
+# (pinned by tests/test_thick.py).
+ICE_BYTE, WATER_BYTE = 99, 138
+
+
+def _thick_build(tmp_path, deps, steps, squares=("N40W125",)):
+    rc = run_build.build(site=tmp_path / "site", state=tmp_path / "state", work=tmp_path / "work",
+                         deps=deps, pages_base=None, steps=list(steps), squares=list(squares), workers=2)
+    assert rc == run_build.BUILT
+    return tmp_path / "site", tmp_path / "blob"
+
+
+def _icl_of(site, name="N40W125"):
+    m = json.loads((site / "manifest.json").read_text())
+    return decode_square((site / m["tiles"] / f"{name}.icl").read_bytes())
+
+
+def _ict_of(blob, name="N40W125"):
+    return decode_blocks((blob / "thick" / "2026092700" / f"{name}.ict").read_bytes(), len(THICK_FIELDS))
+
+
+def test_thickness_goes_to_blob_by_the_squares_hours(tmp_path):
+    deps, calls = _fake_deps(tmp_path)
+    site, blob = _thick_build(tmp_path, deps, range(7))
+    feed = json.loads((blob / "manifest.json").read_text())
+    assert feed["thick"] == {"format": "ICT1", "run": "2026-09-27T00Z", "runMs": int(RUN.timestamp() * 1000),
+                             "tiles": "thick/2026092700"}
+    ict = _ict_of(blob)
+    assert ict["magic"] == b"ICT1"
+    assert ict["step_hours"] == _icl_of(site)["step_hours"] == [hour_of(RUN) + s for s in range(7)]
+    assert ict["cube"].shape == (7, 2, 41, 41)
+    assert (ict["cube"][:, 0] == ICE_BYTE).all() and (ict["cube"][:, 1] == WATER_BYTE).all()
+    # Blob only: Pages carries no thickness and its manifest names none.
+    assert not (site / "thick").exists()
+    assert json.loads((site / "manifest.json").read_text())["thick"] is None
+    assert sorted(calls["regrids_values"]) == sorted((s, f) for s in range(7) for f in THICK_FIELDS)
+
+
+def test_hours_before_the_thickness_history_are_missing(tmp_path):
+    prev = RUN - dt.timedelta(hours=6)
+    save_run_head(tmp_path / "state", prev, np.full((6, 4, NY, NX), 42, dtype=np.uint8))
+    deps, _ = _fake_deps(tmp_path)
+    site, blob = _thick_build(tmp_path, deps, [0, 1])
+    ict = _ict_of(blob)
+    # The cover's history reaches back six hours; the thickness has none yet.
+    assert ict["step_hours"] == _icl_of(site)["step_hours"] == [hour_of(prev) + i for i in range(8)]
+    assert (ict["cube"][:6] == 255).all()
+    assert (ict["cube"][6:, 0] == ICE_BYTE).all() and (ict["cube"][6:, 1] == WATER_BYTE).all()
+
+
+def test_thickness_history_comes_from_state(tmp_path):
+    prev = RUN - dt.timedelta(hours=6)
+    save_run_head(tmp_path / "state", prev, np.full((6, 4, NY, NX), 42, dtype=np.uint8))
+    save_run_head(tmp_path / "state", prev, np.full((6, 2, NY, NX), 50, dtype=np.uint8), sub="thick")
+    deps, _ = _fake_deps(tmp_path)
+    site, blob = _thick_build(tmp_path, deps, [0, 1])
+    ict = _ict_of(blob)
+    assert ict["step_hours"] == _icl_of(site)["step_hours"]
+    assert (ict["cube"][:6] == 50).all()
+    assert (ict["cube"][6:, 0] == ICE_BYTE).all() and (ict["cube"][6:, 1] == WATER_BYTE).all()
+
+
+def test_a_run_saves_its_thickness_head(tmp_path):
+    deps, _ = _fake_deps(tmp_path)
+    _thick_build(tmp_path, deps, range(6))
+    with np.load(tmp_path / "state" / "thick" / "2026092700.npz") as z:
+        head = z["head"]
+    assert head.shape == (6, 2, NY, NX) and head.dtype == np.uint8
+    assert (head[:, 0] == ICE_BYTE).all() and (head[:, 1] == WATER_BYTE).all()
+
+
+def test_unlisted_thickness_waits_then_publishes_without(tmp_path, capsys):
+    deps, calls = _fake_deps(tmp_path)
+    listed = deps.listing
+    deps = deps._replace(listing=lambda hh, field: "" if field in THICK_FIELDS else listed(hh, field))
+    site, blob = _thick_build(tmp_path, deps, [0, 1])
+    # The fake listing carries no column files either, so the columns wait
+    # their own 15 minutes after the thickness's.
+    assert sum(calls["sleeps"]) == run_build.THICK_WAIT_S + run_build.COLUMN_WAIT_S
+    assert calls["regrids_values"] == []
+    assert json.loads((blob / "manifest.json").read_text())["thick"] is None
+    assert not (blob / "thick").exists()
+    assert (blob / "blocks" / "2026092700" / "N40W125.icb").exists()
+    assert "::warning::thickness:" in capsys.readouterr().out
+
+
+def test_a_thickness_failure_never_fails_the_build(tmp_path, capsys):
+    def thick_value(step, field):
+        if (step, field) == (3, "TQC_DIA"):
+            raise OSError("cdo died")
+        return THICK_KG[field]
+    deps, _ = _fake_deps(tmp_path, thick_value=thick_value)
+    site, blob = _thick_build(tmp_path, deps, range(7))
+    assert json.loads((blob / "manifest.json").read_text())["thick"] is None
+    assert not (blob / "thick").exists()
+    assert not (tmp_path / "state" / "thick").exists()
+    assert (site / "tiles" / "2026092700" / "N40W125.icl").exists()
+    assert (blob / "blocks" / "2026092700" / "N40W125.icb").exists()
+    assert "::warning::thickness failed" in capsys.readouterr().out
 
 
 # ---- The column feed --------------------------------------------------------

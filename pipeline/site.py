@@ -26,6 +26,10 @@ def blocks_path(run):
     return f"blocks/{run_id(run)}"
 
 
+def thick_path(run):
+    return f"thick/{run_id(run)}"
+
+
 def build_manifest(run, built, step_hours, squares, history_hours, complete=True, tail=None, columns=None,
                    blocks=None, thick=None):
     out = {
@@ -54,7 +58,9 @@ def build_manifest(run, built, step_hours, squares, history_hours, complete=True
         # folder under which <square>.icb lives, or None. Blob only, like the
         # columns; the ICL1 files above stay for the builds that read them.
         "blocks": blocks,
-        # Cloud thickness (ICT1), {tiles, ...}, or None. Blob only as well.
+        # Cloud thickness (ICT1, cloud ice and water per square on the same
+        # hours as the squares): {format, run, runMs, tiles}, or None. Blob
+        # only as well. See run_build.build_thick.
         "thick": thick,
         "attribution": ATTRIBUTION,
     }

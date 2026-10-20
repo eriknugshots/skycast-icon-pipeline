@@ -108,6 +108,19 @@ def test_regrid_values_runs_cdo_and_cleans_up(tmp_path):
     assert [p.name for p in tmp_path.iterdir()] == [src.name]              # grib and nc removed
 
 
+def test_regrid_values_leaves_the_work_dir_clean_when_cdo_fails(tmp_path):
+    src = tmp_path / "icon_global_icosahedral_single-level_2026092700_005_TQC_DIA.grib2.bz2"
+    src.write_bytes(bz2.compress(b"grib"))
+
+    def failing_cdo(cmd, check):
+        Path(cmd[-1]).write_bytes(b"half-written")           # cdo died after starting its output
+        raise subprocess.CalledProcessError(1, cmd)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        regrid_values(src, "/kit", tmp_path, run=failing_cdo)
+    assert [p.name for p in tmp_path.iterdir()] == [src.name]
+
+
 # ---- The column lattice: DWD's weights applied at every stride-th point ----
 
 

@@ -77,34 +77,31 @@ def world_from_netcdf(path, scale=1.0):
     return out
 
 
-def regrid(grib_bz2, kit, work, run=subprocess.run, scale=1.0):
-    """One DWD .grib2.bz2 → uint8 world array. `run` is injected for tests."""
+def _remapped(grib_bz2, kit, work, run, read):
+    """Unpack one DWD .grib2.bz2, remap it with cdo, hand the .nc to `read`,
+    and remove both temporaries whether or not any step failed."""
     work = Path(work)
     grib = work / Path(grib_bz2).name.replace(".bz2", "")
     nc = grib.with_suffix(".nc")
     unpack_bz2(grib_bz2, grib)
     try:
         run(remap_command(kit, grib, nc), check=True)
-        return world_from_netcdf(nc, scale)
+        return read(nc)
     finally:
         grib.unlink(missing_ok=True)
         nc.unlink(missing_ok=True)
+
+
+def regrid(grib_bz2, kit, work, run=subprocess.run, scale=1.0):
+    """One DWD .grib2.bz2 → uint8 world array. `run` is injected for tests."""
+    return _remapped(grib_bz2, kit, work, run, lambda nc: world_from_netcdf(nc, scale))
 
 
 def regrid_values(grib_bz2, kit, work, run=subprocess.run):
     """One DWD .grib2.bz2 → float32 world array in the field's own units
     (cloud ice/water columns in kg/m², which `regrid` would clip to 0-100
     percent); NaN where missing. `run` is injected for tests."""
-    work = Path(work)
-    grib = work / Path(grib_bz2).name.replace(".bz2", "")
-    nc = grib.with_suffix(".nc")
-    unpack_bz2(grib_bz2, grib)
-    try:
-        run(remap_command(kit, grib, nc), check=True)
-        return world_values_from_netcdf(nc)
-    finally:
-        grib.unlink(missing_ok=True)
-        nc.unlink(missing_ok=True)
+    return _remapped(grib_bz2, kit, work, run, world_values_from_netcdf)
 
 
 # ---- The column feed: physical values, several levels per file -------------

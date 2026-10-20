@@ -21,16 +21,17 @@ import numpy as np
 
 from pipeline import columns, dwd, history, live, site
 from pipeline.encode import encode_square, quantize, FIELD_COUNT
-from pipeline.regrid import ensure_kit, regrid, lattice_levels
+from pipeline.regrid import ensure_kit, regrid, lattice_levels, regrid_values
 from pipeline.squares import all_squares, parse_name, slice_square, NX, NY
 
 BUILT, NOTHING_TO_DO, FAILED = 0, 3, 1
 ROOT = Path(__file__).resolve().parent
 
-# lattice_levels and sleep are the column feed's (build_columns); they default
-# to the real ones so a caller that predates the columns still builds.
-Deps = namedtuple("Deps", "listing fetch_text download regrid ensure_kit now lattice_levels sleep",
-                  defaults=(lattice_levels, time.sleep))
+# lattice_levels and sleep are the column feed's (build_columns), regrid_values
+# the thickness feed's; they default to the real ones so a caller that predates
+# them still builds.
+Deps = namedtuple("Deps", "listing fetch_text download regrid ensure_kit now lattice_levels sleep regrid_values",
+                  defaults=(lattice_levels, time.sleep, regrid_values))
 
 
 def _http_text(url, timeout=60):
@@ -58,7 +59,8 @@ def _download(url, dst, timeout=120, attempts=3, urlopen=urllib.request.urlopen)
 
 REAL = Deps(listing=lambda hh, field: _http_text(dwd.listing_url(hh, field)),
             fetch_text=_http_text, download=_download, regrid=regrid, ensure_kit=ensure_kit,
-            now=lambda: dt.datetime.now(dt.timezone.utc), lattice_levels=lattice_levels, sleep=time.sleep)
+            now=lambda: dt.datetime.now(dt.timezone.utc), lattice_levels=lattice_levels, sleep=time.sleep,
+            regrid_values=regrid_values)
 
 
 def live_complete_run(deps, pages_base):

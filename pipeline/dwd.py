@@ -20,7 +20,15 @@ STEPS = list(range(0, 79)) + list(range(81, 121, 3))
 TAIL_RUN_HOURS = ["00", "12"]
 TAIL_STEPS = list(range(123, 145, 3))
 
-_NAME = re.compile(r"icon_global_icosahedral_single-level_(\d{10})_(\d{3})_([A-Z]+)\.grib2\.bz2")
+# Cloud thickness: vertically integrated cloud ice and cloud water, kg/m²
+# (DWD single-level TQI_DIA, TQC_DIA — measured 2026-10-20; the ice, water
+# order is the thickness file's field order). They ride alongside the cover
+# fields but never decide whether a run is complete: DWD may lag on them, and
+# a missing thickness must not hold back the cover.
+THICK_FIELDS = ["TQI_DIA", "TQC_DIA"]
+
+# The field may hold an underscore (TQI_DIA), which a listing must still match.
+_NAME = re.compile(r"icon_global_icosahedral_single-level_(\d{10})_(\d{3})_([A-Z_]+)\.grib2\.bz2")
 
 
 def run_id(run):
@@ -72,6 +80,13 @@ def newest_complete_run(listing, run_hours=None, steps=None):
         if all(not missing_files(html if f == FIELDS[0] else listing(hh, f), run, f, steps) for f in FIELDS):
             candidates.append(run)
     return max(candidates) if candidates else None
+
+
+def missing_thick_files(listing, run, steps):
+    """`listing(hh, field) -> html`. The thickness file names of `run` not
+    listed yet, across both fields."""
+    hh = f"{run:%H}"
+    return [n for f in THICK_FIELDS for n in missing_files(listing(hh, f), run, f, steps)]
 
 
 # ---- The column feed (docs/column-feed-design.md) ---------------------------

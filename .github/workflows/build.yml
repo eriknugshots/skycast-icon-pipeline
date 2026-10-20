@@ -76,8 +76,9 @@ jobs:
       - uses: actions/setup-node@v4
         if: steps.build.outputs.rc == '0' && !inputs.steps && !inputs.squares
         with: { node-version: "22" }
-      # site/ and then blob/ (the column feed, Blob only — never on Pages, never
-      # in its 1 GB budget; blob/manifest.json is site's plus the columns key).
+      # site/ and then blob/ (the Blob-only families: blocks, thickness and the
+      # column feed, plus the manifest that names them — never on Pages, never in
+      # its 1 GB budget; blob/manifest.json is site's plus those keys).
       - name: publish to Vercel Blob (the app's feed; Pages above stays for older builds) — full builds only
         if: steps.build.outputs.rc == '0' && !inputs.steps && !inputs.squares
         continue-on-error: true

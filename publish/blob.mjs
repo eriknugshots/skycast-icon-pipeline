@@ -4,16 +4,17 @@
 // whose hard 1 GB cap is why the feed once left the open ocean out. Pages stays
 // published too: builds already on testers' phones read it.
 //
-// Order matters. The run's folders (tiles/<run>/, tail/<run>/) are uploaded
-// first — their paths never change, so they are cached for a year — and
+// Order matters. The run's folders (tiles, blocks, tail, columns and thick, each
+// <folder>/<run>/ — the ones a manifest names; prune.mjs is the source of truth)
+// are uploaded first — their paths never change, so they are cached for a year — and
 // manifest.json LAST, cached 60 s, so no phone ever reads a manifest whose
 // squares are not there yet. Then every folder but the new manifest's and the
 // previous manifest's is deleted (prune.mjs): a phone that read the old
 // manifest a moment ago is still fetching its squares.
 //
 // Several roots may be given: `node blob.mjs ../site ../blob` uploads site/
-// (what Pages carries too) and then blob/ (Blob only: the column feed and the
-// manifest that names it); a later root's file replaces the same path in an
+// (what Pages carries too) and then blob/ (Blob only: blocks, thickness and the
+// column feed, with the manifest that names them); a later root's file replaces the same path in an
 // earlier one (roots.mjs), so the manifest that goes up is blob/'s.
 //
 // Usage: BLOB_READ_WRITE_TOKEN=… node publish/blob.mjs <siteDir> [<moreDir> …]

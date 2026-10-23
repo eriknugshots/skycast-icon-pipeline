@@ -19,8 +19,14 @@
 # --health-url, --name and --fields point the same watchdog at another health
 # route (the tick runs a second one for the tile key job); the defaults are the
 # alerts check exactly, and each check keeps its own --state-file.
+# The email goes out as SkyCast Admin with the plain text AND the same dark
+# HTML card as the app's admin alerts (SkyCast api/_alertmail.js,
+# alertEmailHtml): a "SKYCAST ADMIN" line in amber, the subject as the title,
+# the lines, the links as amber buttons, one quiet footer. Tables and inline
+# styles only, no images or web fonts, every interpolated string escaped.
 import argparse
 import datetime as dt
+import html as htmllib
 import json
 import os
 import sys
@@ -30,7 +36,11 @@ import urllib.request
 HEALTH_URL = "https://sunset-prediction.vercel.app/api/alerts-health"
 LOGS_URL = "https://vercel.com/sky-cast-d0844559/sunset-prediction/logs"
 RESEND_URL = "https://api.resend.com/emails"
-SENDER = "SkyCast alerts <alerts@skycastapp.com>"
+SENDER = "SkyCast Admin <alerts@skycastapp.com>"
+FOOTER = "SkyCast admin alert · sent by the tick watchdog (skycast-icon-pipeline)."
+# The app's own tokens (SkyCast index.html), as in api/_alertmail.js.
+GROUND, CARD, TEXT, TEXT2, TEXT3, LINE, AMBER = "#050608", "#0c1015", "#f2f4f7", "#aab2c0", "#6b7382", "#1f2630", "#f59e0b"
+FONT = "Jost, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
 RECIPIENTS = ["erik@nugshots.com", "info@skycastapp.com"]
 KEY_ENV = "RESEND_ALERTS_KEY"
 HEALTH_TIMEOUT = 15
@@ -128,9 +138,75 @@ def compose(kind, cause, fields, now, down_since=None, name="alerts", health_url
     return subject, "\n".join(lines) + "\n"
 
 
-def send(http, key, subject, text):
-    """(sent, detail) for one email through Resend's HTTP API."""
-    payload = json.dumps({"from": SENDER, "to": RECIPIENTS, "subject": subject, "text": text}).encode()
+def _esc(v):
+    return htmllib.escape("" if v is None else str(v), quote=True)
+
+
+def html_email(title, lines, links, footer=FOOTER):
+    """The branded HTML card (the same look as SkyCast's api/_alertmail.js):
+    title, paragraphs, links [(label, href)] (the first a filled amber button,
+    the rest amber text links; only http(s) addresses), one footer line."""
+    font = f"font-family:{FONT};"
+    paras = "\n".join(
+        f'<p style="margin:0 0 12px;{font}font-size:15px;line-height:1.55;color:{TEXT2};">{_esc(l.strip())}</p>'
+        for l in lines if l and l.strip())
+    cells = []
+    for i, (label, href) in enumerate(l for l in links if l[1] and str(l[1]).lower().startswith(("http://", "https://"))):
+        if i == 0:
+            cells.append(
+                f'<td style="padding:0 12px 8px 0;" valign="middle"><table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>'
+                f'<td bgcolor="{AMBER}" style="background-color:{AMBER};border-radius:9px;"><a href="{_esc(href)}" style="display:inline-block;'
+                f'padding:11px 18px;{font}font-size:14px;font-weight:600;line-height:1.2;color:{GROUND};text-decoration:none;border-radius:9px;">'
+                f'{_esc(label)}</a></td></tr></table></td>')
+        else:
+            cells.append(
+                f'<td style="padding:0 12px 8px 0;" valign="middle"><a href="{_esc(href)}" style="display:inline-block;padding:11px 4px;'
+                f'{font}font-size:14px;font-weight:600;line-height:1.2;color:{AMBER};text-decoration:underline;">{_esc(label)}</a></td>')
+    buttons = (f'<tr><td style="padding:10px 28px 18px;"><table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>'
+               f'{"".join(cells)}</tr></table></td></tr>\n') if cells else ""
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="supported-color-schemes" content="dark">
+<title>{_esc(title)}</title>
+<style>:root {{ color-scheme: dark; supported-color-schemes: dark; }}</style>
+</head>
+<body bgcolor="{GROUND}" style="margin:0;padding:0;background-color:{GROUND};">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="{GROUND}" style="background-color:{GROUND};">
+<tr><td align="center" style="padding:32px 16px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="{CARD}" style="max-width:560px;background-color:{CARD};border:1px solid {LINE};border-radius:14px;">
+<tr><td style="padding:26px 28px 0;{font}font-size:11px;font-weight:600;letter-spacing:0.22em;text-transform:uppercase;color:{AMBER};">SKYCAST ADMIN</td></tr>
+<tr><td style="padding:12px 28px 6px;"><h1 style="margin:0;{font}font-size:21px;font-weight:600;line-height:1.3;color:{TEXT};">{_esc(title)}</h1></td></tr>
+<tr><td style="padding:10px 28px 4px;">
+{paras}
+</td></tr>
+{buttons}<tr><td style="padding:16px 28px 24px;border-top:1px solid {LINE};{font}font-size:12px;line-height:1.5;color:{TEXT3};">{_esc(footer)}</td></tr>
+</table>
+</td></tr>
+</table>
+</body>
+</html>
+"""
+
+
+def compose_html(subject, text, health_url=HEALTH_URL):
+    """The card for a composed email: its subject, its lines up to the link
+    lines (which become the buttons), the logs and the health check."""
+    lines = [l for l in text.splitlines()
+             if l.strip() and not l.startswith(("Health: ", "Logs: ", "Sent by the tick watchdog"))]
+    return html_email(subject, lines, [("Open the logs", LOGS_URL), ("Health check", health_url)])
+
+
+def send(http, key, subject, text, html=None):
+    """(sent, detail) for one email through Resend's HTTP API. html, when
+    given, is the branded card; text stays as every client's fallback."""
+    doc = {"from": SENDER, "to": RECIPIENTS, "subject": subject, "text": text}
+    if html:
+        doc["html"] = html
+    payload = json.dumps(doc).encode()
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     try:
         status, body = http("POST", RESEND_URL, headers, payload, SEND_TIMEOUT)
@@ -167,7 +243,7 @@ def wake(prev, key, http, now, log, name="alerts", health_url=HEALTH_URL, fields
         return nxt
     subject, text = compose(kind, cause, fields, now, prev.get("since") if kind == "recovered" else None,
                             name, health_url, fields_wanted)
-    sent, detail = send(http, key, subject, text)
+    sent, detail = send(http, key, subject, text, compose_html(subject, text, health_url))
     if sent:
         log(f"watchdog: emailed \"{kind}\" to {', '.join(RECIPIENTS)} ({detail})")
         return nxt

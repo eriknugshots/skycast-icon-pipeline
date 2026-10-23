@@ -167,9 +167,9 @@ def test_the_down_email_is_plain_short_text_with_fields_time_and_logs():
     email = json.loads(body)
     assert (method, url, timeout) == ("POST", "https://api.resend.com/emails", 15)
     assert headers["Authorization"] == "Bearer re_secret"
-    assert email["from"] == "SkyCast alerts <alerts@skycastapp.com>"
+    assert email["from"] == "SkyCast Admin <alerts@skycastapp.com>"
     assert email["to"] == ["erik@nugshots.com", "info@skycastapp.com"]
-    assert set(email) == {"from", "to", "subject", "text"}
+    assert set(email) == {"from", "to", "subject", "text", "html"}
     assert email["subject"] == "SkyCast alerts server down: HTTP 503"
     text = email["text"]
     for line in ("ok: false", "lastRunAgeMin: 4", "lastOkAgeMin: 95", "lastErrorKind: apns",
@@ -293,3 +293,31 @@ def test_without_absent_ok_a_404_is_down():
     http = Http((404, {}))
     _, emails, _ = run_chain([http])
     assert len(emails) == 1 and "HTTP 404" in emails[0]["subject"]
+
+
+# --- the branded card (the same look as SkyCast's admin alerts) -----------------
+
+def test_the_email_carries_the_skycast_admin_card_beside_the_text():
+    http = Http((503, FAILING))
+    wd.wake({"state": wd.OK}, "re_test", http, T0, lambda _: None)
+    [email] = http.emails
+    html = email["html"]
+    assert "SKYCAST ADMIN" in html
+    assert "SkyCast alerts server down: HTTP 503</h1>" in html
+    for line in ("ok: false", "lastErrorKind: apns", "Checked: 2026-10-02 21:40 UTC"):
+        assert line in html
+    assert f'href="{wd.LOGS_URL}"' in html and ">Open the logs</a>" in html
+    assert f'href="{wd.HEALTH_URL}"' in html and ">Health check</a>" in html
+    assert 'bgcolor="#050608"' in html and 'bgcolor="#0c1015"' in html and "color:#f59e0b" in html
+    assert '<meta name="color-scheme" content="dark">' in html and "max-width:560px" in html
+    assert "<img" not in html and "@font-face" not in html
+    # the text is the fallback, unchanged
+    assert "Logs: https://vercel.com/sky-cast-d0844559/sunset-prediction/logs" in email["text"].splitlines()
+
+
+def test_the_card_escapes_everything_and_draws_only_web_links():
+    html = wd.html_email('down: <b>"x" & y</b>', ["a < b & c"], [("go", "javascript:alert(1)"), ("ok", "https://e.x/?a=1&b=2")])
+    assert "<b>" not in html and "&lt;b&gt;&quot;x&quot; &amp; y&lt;/b&gt;" in html
+    assert "a &lt; b &amp; c" in html
+    assert "javascript:" not in html
+    assert 'href="https://e.x/?a=1&amp;b=2"' in html

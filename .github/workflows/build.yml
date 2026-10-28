@@ -22,7 +22,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04   # pinned: "latest" moves to a new Ubuntu under the build
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
@@ -40,11 +40,27 @@ jobs:
       - run: pip install -r requirements.txt
       - run: python -m pytest -q
       - name: fetch state (history from earlier runs; absent on the first build)
+        id: state
+        # A state branch that exists but cannot be fetched must not be
+        # overwritten by this build's near-empty one: build without history
+        # and skip "publish state" (keep=1). ls-remote exits 2 when the
+        # branch is absent, anything else non-zero when GitHub did not answer.
         run: |
-          if git fetch --depth 1 origin state 2>/dev/null; then
-            git worktree add state origin/state
-          else
+          set +e
+          git ls-remote --exit-code --heads origin state >/dev/null 2>&1
+          ls=$?
+          set -e
+          if [ "$ls" = "2" ]; then
             mkdir -p state
+          else
+            for i in 1 2 3; do git fetch --depth 1 origin state && break; sleep $((i * 10)); done
+            if git rev-parse -q --verify origin/state >/dev/null; then
+              git worktree add state origin/state
+            else
+              echo "::warning::state branch could not be fetched (ls-remote $ls) — building without history, keeping the saved state"
+              mkdir -p state
+              echo "keep=1" >> "$GITHUB_OUTPUT"
+            fi
           fi
       - name: build
         id: build
@@ -65,6 +81,9 @@ jobs:
           du -sh state 2>/dev/null || true
       - name: publish site (orphan force-push to gh-pages)
         if: steps.build.outputs.rc == '0'
+        # Pages serves only builds older than the Blob feed: its failure must
+        # never skip the Blob publish or the state below.
+        continue-on-error: true
         run: |
           cd site
           git init -b gh-pages -q
@@ -90,7 +109,7 @@ jobs:
           node --test
           node blob.mjs ../site ../blob
       - name: publish state (orphan force-push to state) — full builds only
-        if: steps.build.outputs.rc == '0' && !inputs.steps
+        if: steps.build.outputs.rc == '0' && !inputs.steps && steps.state.outputs.keep != '1'
         run: |
           cd state
           rm -rf .git

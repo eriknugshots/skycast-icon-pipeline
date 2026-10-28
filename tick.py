@@ -5,10 +5,9 @@
 # (2026-09-27/28), which let the live run age past the app's 12 h limit.
 import argparse
 import sys
-import urllib.request
 
 from pipeline import dwd
-from pipeline.live import live_complete_run
+from pipeline import live
 
 NEEDED, NOTHING = 0, 3
 
@@ -17,12 +16,11 @@ def needs_build(listing, fetch_text, pages_base):
     run = dwd.newest_complete_run(listing)
     if run is None:
         return False
-    return live_complete_run(fetch_text, pages_base) != dwd.run_iso(run)
+    return not live.run_is_done(fetch_text, pages_base, dwd.run_iso(run))
 
 
 def _http_text(url, timeout=60):
-    with urllib.request.urlopen(url, timeout=timeout) as r:
-        return r.read().decode("utf-8", "replace")
+    return live.http_text(url, timeout=timeout)
 
 
 def main():

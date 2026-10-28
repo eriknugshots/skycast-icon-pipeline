@@ -68,11 +68,14 @@ def _fake_deps(tmp_path, world_value=lambda step, field: 0, prev_manifest=None,
                           regrid=regrid, ensure_kit=lambda work: Path("/kit"),
                           now=lambda: dt.datetime(2026, 9, 27, 3, tzinfo=UTC),
                           lattice_levels=_no_columns, sleep=lambda s: calls["sleeps"].append(s),
-                          regrid_values=regrid_values), calls
+                          regrid_values=regrid_values, validate=lambda world: []), calls
+
+
+WHOLE = {"columns": {"x": 1}, "thick": {"x": 1}, "blocks": "blocks/x", "tail": {"x": 1}}
 
 
 def test_early_exit_when_the_site_already_has_this_run(tmp_path, capsys):
-    deps, calls = _fake_deps(tmp_path, prev_manifest={"run": "2026-09-27T00Z", "complete": True})
+    deps, calls = _fake_deps(tmp_path, prev_manifest={"run": "2026-09-27T00Z", "complete": True, **WHOLE})
     rc = run_build.build(site=tmp_path / "site", state=tmp_path / "state", work=tmp_path / "work",
                          deps=deps, pages_base="https://x", steps=None, squares=None)
     assert rc == run_build.NOTHING_TO_DO
@@ -151,12 +154,34 @@ def test_download_retries_a_short_body_then_raises(tmp_path):
     def urlopen(url, timeout):
         opens.append(url)
         return _Resp(bodies[len(opens) - 1], 10)
-    run_build._download("u", tmp_path / "f", urlopen=urlopen)
+    run_build._download("u", tmp_path / "f", urlopen=urlopen, sleep=lambda s: None)
     assert len(opens) == 3 and (tmp_path / "f").read_bytes() == b"1234567890"
     opens.clear()
     import pytest
-    with pytest.raises(OSError, match="truncated"):
-        run_build._download("u", tmp_path / "g", urlopen=lambda url, timeout: _Resp(b"12", 10))
+    with pytest.raises(OSError, match="got 2 of 10 bytes"):
+        run_build._download("u", tmp_path / "g", urlopen=lambda url, timeout: _Resp(b"12", 10), sleep=lambda s: None)
+
+
+def test_download_retries_a_dropped_connection_but_not_a_404(tmp_path):
+    import http.client, urllib.error, pytest
+    opens, naps = [], []
+    def urlopen(url, timeout):
+        opens.append(url)
+        if len(opens) < 3:
+            raise http.client.RemoteDisconnected("Remote end closed connection without response")
+        return _Resp(b"1234567890", 10)
+    run_build._download("u", tmp_path / "f", urlopen=urlopen, sleep=naps.append)
+    assert len(opens) == 3 and naps == [2, 4] and (tmp_path / "f").read_bytes() == b"1234567890"
+    opens.clear()
+    def gone(url, timeout):
+        opens.append(url)
+        raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+    with pytest.raises(urllib.error.HTTPError):
+        run_build._download("u", tmp_path / "g", urlopen=gone, sleep=naps.append)
+    assert len(opens) == 1
+    with pytest.raises(OSError, match="RemoteDisconnected"):
+        run_build._download("u", tmp_path / "h", sleep=lambda s: None,
+                            urlopen=lambda url, timeout: (_ for _ in ()).throw(http.client.RemoteDisconnected("x")))
 
 
 def test_a_full_build_publishes_every_square_and_reads_no_land_mask(tmp_path):
@@ -664,3 +689,55 @@ def test_the_columns_go_to_blob_only_and_never_touch_the_pages_budget(tmp_path, 
     assert "budget" not in out
     assert run_build._dir_bytes(tmp_path / "b" / "site" / "tiles") == clouds
     assert json.loads((tmp_path / "b" / "blob" / "manifest.json").read_text())["columns"] is not None
+
+
+# ---- Contingencies (2026-10-28) ----------------------------------------------
+
+def test_world_problems_names_a_constant_field_and_an_impossible_total_cover():
+    real = np.tile(np.arange(NX, dtype=np.uint8) % 101, (NY, 1))         # mean ~50, varied
+    ok = {(0, f): real for f in run_build.dwd.FIELDS}
+    assert run_build.world_problems(ok) == []
+    flat = dict(ok); flat[(0, "CLCL")] = np.zeros((NY, NX), np.uint8)
+    assert run_build.world_problems(flat) == ["CLCL +0h is 0 everywhere"]
+    clear = dict(ok); clear[(3, "CLCT")] = (real // 10).astype(np.uint8)  # varied but ~5 %
+    assert any(p.startswith("CLCT +3h averages") for p in run_build.world_problems(clear))
+
+
+def test_a_broken_run_is_never_published(tmp_path):
+    deps, _ = _fake_deps(tmp_path)
+    deps = deps._replace(validate=lambda world: ["CLCT +0h is 0 everywhere"])
+    rc = run_build.build(site=tmp_path / "site", state=tmp_path / "state", work=tmp_path / "work",
+                         deps=deps, pages_base=None, steps=[0], squares=["N00E000"])
+    assert rc == run_build.FAILED
+    assert not (tmp_path / "site" / "manifest.json").exists()
+
+
+def test_the_real_deps_validate_with_world_problems():
+    assert run_build.REAL.validate is None                                # resolved to world_problems in build()
+
+
+def test_unreadable_history_costs_the_past_hours_not_the_run(tmp_path, monkeypatch):
+    deps, _ = _fake_deps(tmp_path)
+    def boom(*a, **k):
+        raise ValueError("bad history")
+    monkeypatch.setattr(run_build.history, "load_history_steps", boom)
+    rc = run_build.build(site=tmp_path / "site", state=tmp_path / "state", work=tmp_path / "work",
+                         deps=deps, pages_base=None, steps=[0], squares=["N00E000"])
+    assert rc == run_build.BUILT
+    assert json.loads((tmp_path / "site" / "manifest.json").read_text())["historySteps"] == 0
+
+
+def test_rebuilding_the_live_run_counts_a_repair(tmp_path, monkeypatch):
+    # The live manifest (Blob's, here the fake's) is this run without its columns, repaired once.
+    prev = {"run": "2026-09-27T00Z", "complete": True, **WHOLE, "columns": None, "repairs": 1}
+    deps, _ = _fake_deps(tmp_path, prev_manifest=prev)
+    for f in ("build_tail", "build_thick", "build_columns"):
+        monkeypatch.setattr(run_build, f, lambda *a, **k: None)
+    rc = run_build.build(site=tmp_path / "site", state=tmp_path / "state", work=tmp_path / "work",
+                         deps=deps, pages_base="https://x", steps=None, squares=None, workers=2)
+    assert rc == run_build.BUILT
+    assert json.loads((tmp_path / "blob" / "manifest.json").read_text())["repairs"] == 2
+    # A second repair is the last: the same manifest at 2 is left alone.
+    deps, _ = _fake_deps(tmp_path, prev_manifest={**prev, "repairs": 2})
+    assert run_build.build(site=tmp_path / "s2", state=tmp_path / "st2", work=tmp_path / "w2",
+                           deps=deps, pages_base="https://x") == run_build.NOTHING_TO_DO

@@ -31,7 +31,7 @@ def thick_path(run):
 
 
 def build_manifest(run, built, step_hours, squares, history_hours, complete=True, tail=None, columns=None,
-                   blocks=None, thick=None):
+                   blocks=None, thick=None, repairs=0):
     out = {
         "run": run_iso(run),
         # False for a test build (some steps, some squares). Only a complete
@@ -62,6 +62,9 @@ def build_manifest(run, built, step_hours, squares, history_hours, complete=True
         # hours as the squares): {format, run, runMs, tiles}, or None. Blob
         # only as well. See run_build.build_thick.
         "thick": thick,
+        # How many times this run was rebuilt because it went live with a
+        # family missing (pipeline/live.py MAX_REPAIRS).
+        "repairs": int(repairs),
         "attribution": ATTRIBUTION,
     }
     return json.dumps(out, separators=(",", ":"))

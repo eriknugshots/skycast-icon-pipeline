@@ -14,6 +14,8 @@ import subprocess
 import sys
 import threading
 import time
+import http.client
+import urllib.error
 import urllib.request
 from collections import namedtuple
 from pathlib import Path
@@ -30,42 +32,76 @@ ROOT = Path(__file__).resolve().parent
 # lattice_levels and sleep are the column feed's (build_columns), regrid_values
 # the thickness feed's; they default to the real ones so a caller that predates
 # them still builds.
-Deps = namedtuple("Deps", "listing fetch_text download regrid ensure_kit now lattice_levels sleep regrid_values",
-                  defaults=(lattice_levels, time.sleep, regrid_values))
+Deps = namedtuple("Deps", "listing fetch_text download regrid ensure_kit now lattice_levels sleep regrid_values validate",
+                  defaults=(lattice_levels, time.sleep, regrid_values, None))
 
 
 def _http_text(url, timeout=60):
-    with urllib.request.urlopen(url, timeout=timeout) as r:
-        return r.read().decode("utf-8", "replace")
+    return live.http_text(url, timeout=timeout)
 
 
-def _download(url, dst, timeout=120, attempts=3, urlopen=urllib.request.urlopen):
-    """Fetch url to dst, whole: a short body (a dropped connection, a proxy
-    cutting off) is retried, then raised — never handed to bunzip2 to fail
-    on later, or worse, decoded as far as it goes."""
+def _download(url, dst, timeout=120, attempts=4, urlopen=urllib.request.urlopen, sleep=time.sleep):
+    """Fetch url to dst, whole: a short body (a proxy cutting off) or a
+    connection DWD drops outright (RemoteDisconnected, a reset, a timeout) is
+    retried after a short pause, then raised — never handed to bunzip2 to
+    fail on later, or worse, decoded as far as it goes. A 404 is not retried:
+    the file is not there. (2026-10-28: one dropped connection among the
+    column feed's thousands of files cost the 18Z run its fog data.)"""
     last = None
-    for _ in range(attempts):
-        with urlopen(url, timeout=timeout) as r, open(dst, "wb") as f:
-            want = r.headers.get("Content-Length")
-            got = 0
-            while chunk := r.read(1 << 20):
-                f.write(chunk)
-                got += len(chunk)
+    for i in range(attempts):
+        if i:
+            sleep(2 * i)
+        try:
+            with urlopen(url, timeout=timeout) as r, open(dst, "wb") as f:
+                want = r.headers.get("Content-Length")
+                got = 0
+                while chunk := r.read(1 << 20):
+                    f.write(chunk)
+                    got += len(chunk)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                raise
+            last = f"{url}: HTTP {e.code}"
+            continue
+        except (OSError, http.client.HTTPException) as e:
+            last = f"{url}: {type(e).__name__}: {e}"
+            continue
         if want is None or got == int(want):
             return
         last = f"{url}: got {got} of {want} bytes"
-    raise OSError(f"download truncated after {attempts} attempts: {last}")
+    raise OSError(f"download failed after {attempts} attempts: {last}")
 
 
 REAL = Deps(listing=lambda hh, field: _http_text(dwd.listing_url(hh, field)),
             fetch_text=_http_text, download=_download, regrid=regrid, ensure_kit=ensure_kit,
             now=lambda: dt.datetime.now(dt.timezone.utc), lattice_levels=lattice_levels, sleep=time.sleep,
-            regrid_values=regrid_values)
+            regrid_values=regrid_values, validate=None)
 
 
 def live_complete_run(deps, pages_base):
-    """The run the live site carries COMPLETELY (see pipeline/live.py)."""
+    """The run the live feed carries COMPLETELY (see pipeline/live.py)."""
     return live.live_complete_run(deps.fetch_text, pages_base)
+
+
+# A world field no real ICON run can produce: a broken or truncated file that
+# still decoded. CLCT is total cover; its plain mean over the 0.125° grid sits
+# near 65 % (the cloudy poles weigh in) and never near 0 or 100.
+CLCT_MEAN_RANGE = (20.0, 95.0)
+
+
+def world_problems(world):
+    """[problem, …] for the downloaded cloud fields {(step, field): uint8
+    world}: any field the same value everywhere, or a step whose total cover
+    averages outside CLCT_MEAN_RANGE. Empty when the run looks real."""
+    out = []
+    for (step, field), arr in sorted(world.items()):
+        if arr.size == 0 or int(arr.max()) == int(arr.min()):
+            out.append(f"{field} +{step}h is {int(arr.max()) if arr.size else 'empty'} everywhere")
+        elif field == "CLCT":
+            m = float(arr.mean())
+            if not CLCT_MEAN_RANGE[0] <= m <= CLCT_MEAN_RANGE[1]:
+                out.append(f"CLCT +{step}h averages {m:.1f} %")
+    return out
 
 
 def build(site, state, work, deps, pages_base, steps=None, squares=None, workers=None, blob=None):
@@ -79,9 +115,14 @@ def build(site, state, work, deps, pages_base, steps=None, squares=None, workers
         print("no complete run on DWD yet")
         return NOTHING_TO_DO
     full = steps is None and squares is None
-    if full and live_complete_run(deps, pages_base) == dwd.run_iso(run):
+    if full and live.run_is_done(deps.fetch_text, pages_base, dwd.run_iso(run)):
         print(f"run {dwd.run_iso(run)} already published — nothing to do")
         return NOTHING_TO_DO
+    # A rebuild of the live run (it went out with a piece missing) counts
+    # toward live.MAX_REPAIRS.
+    repairs = live.repairs_for(deps.fetch_text, pages_base, dwd.run_iso(run)) if full else 0
+    if repairs:
+        print(f"run {dwd.run_iso(run)} is live without every part — rebuilding it (repair {repairs})")
     steps = list(steps) if steps is not None else dwd.STEPS
     site, state, work = Path(site), Path(state), Path(work)
     blob = Path(blob) if blob is not None else site.parent / "blob"
@@ -118,9 +159,21 @@ def build(site, state, work, deps, pages_base, steps=None, squares=None, workers
     except Exception as e:
         print(f"::error::run {dwd.run_iso(run)} failed: {e}")
         return FAILED
+    # Never publish an impossible field over a good run: FAILED leaves the
+    # live feed as it was, and the next tick tries again.
+    problems = (deps.validate or world_problems)(world)
+    if problems:
+        print(f"::error::run {dwd.run_iso(run)} looks broken, not publishing: " + "; ".join(problems[:5])
+              + (f" (+{len(problems) - 5} more)" if len(problems) > 5 else ""))
+        return FAILED
 
     # History first, then the run's own steps, one [4][NY][NX] stack per hour.
-    past = history.load_history_steps(state, run)
+    # Unreadable history costs the past hours, never the run.
+    try:
+        past = history.load_history_steps(state, run)
+    except Exception as e:
+        print(f"::warning::history unreadable, building without it: {type(e).__name__}: {e}")
+        past = []
     base_hour = history.hour_of(run)
     stacks = [(h, arr) for h, arr in past]
     for s in steps:
@@ -168,11 +221,12 @@ def build(site, state, work, deps, pages_base, steps=None, squares=None, workers
     stacks.clear()                       # ~2.5 GB of cloud arrays back before the columns
     past.clear()
     # Pages carries none of the columns, blocks or thickness, so its manifest names none.
-    (site / "manifest.json").write_text(site_manifest(run, deps.now(), hours, names, n_past, full, tail, None))
+    (site / "manifest.json").write_text(site_manifest(run, deps.now(), hours, names, n_past, full, tail, None,
+                                                      repairs=repairs))
     thickness = build_thick(blob, state, work, deps, kit, run, steps, names, workers, hours)
     cols = build_columns(blob, state, work, deps, kit, run, steps, names, workers)
     (blob / "manifest.json").write_text(site_manifest(run, deps.now(), hours, names, n_past, full, tail, cols,
-                                                      blocks=site_blocks(run), thick=thickness))
+                                                      blocks=site_blocks(run), thick=thickness, repairs=repairs))
     print(f"built {len(names)} squares, {len(hours)} steps ({n_past} history)")
     return BUILT
 
@@ -206,8 +260,9 @@ def site_blocks(run):
 
 
 def site_manifest(run, built, hours, names, history_steps, complete, tail=None, columns=None,
-                  blocks=None, thick=None):
-    return site.build_manifest(run, built, hours, names, history_steps, complete, tail, columns, blocks, thick)
+                  blocks=None, thick=None, repairs=0):
+    return site.build_manifest(run, built, hours, names, history_steps, complete, tail, columns, blocks, thick,
+                               repairs)
 
 
 def write_blocks(blob_dir, run, names, stacks, hours):

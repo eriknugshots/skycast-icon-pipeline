@@ -34,7 +34,7 @@ import urllib.error
 import urllib.request
 
 HEALTH_URL = "https://sunset-prediction.vercel.app/api/alerts-health"
-LOGS_URL = "https://vercel.com/sky-cast-d0844559/sunset-prediction/logs"
+LOGS_URL = "https://vercel.com/basalt-labs/sunset-prediction/logs"
 RESEND_URL = "https://api.resend.com/emails"
 SENDER = "SkyCast Admin <alerts@skycastapp.com>"
 FOOTER = "SkyCast admin alert · sent by the tick watchdog (skycast-icon-pipeline)."

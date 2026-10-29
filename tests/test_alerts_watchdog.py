@@ -174,7 +174,7 @@ def test_the_down_email_is_plain_short_text_with_fields_time_and_logs():
     text = email["text"]
     for line in ("ok: false", "lastRunAgeMin: 4", "lastOkAgeMin: 95", "lastErrorKind: apns",
                  "Checked: 2026-10-02 21:40 UTC",
-                 "Logs: https://vercel.com/sky-cast-d0844559/sunset-prediction/logs"):
+                 "Logs: https://vercel.com/basalt-labs/sunset-prediction/logs"):
         assert line in text.splitlines()
     assert len(text.splitlines()) < 15
 
@@ -312,7 +312,7 @@ def test_the_email_carries_the_skycast_admin_card_beside_the_text():
     assert '<meta name="color-scheme" content="dark">' in html and "max-width:560px" in html
     assert "<img" not in html and "@font-face" not in html
     # the text is the fallback, unchanged
-    assert "Logs: https://vercel.com/sky-cast-d0844559/sunset-prediction/logs" in email["text"].splitlines()
+    assert "Logs: https://vercel.com/basalt-labs/sunset-prediction/logs" in email["text"].splitlines()
 
 
 def test_the_card_escapes_everything_and_draws_only_web_links():

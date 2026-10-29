@@ -78,6 +78,7 @@ def run_loop(tmp_path, wd_mode):
     runner_temp.mkdir()
     (runner_temp / "alerts-watchdog.json").write_text('{"state": "down"}')   # a stale state must not survive
     (runner_temp / "tiles-watchdog.json").write_text('{"state": "down"}')
+    (runner_temp / "admin-alerts-watchdog.json").write_text('{"state": "down"}')
     script = tmp_path / "loop.sh"
     script.write_text(loop_script())
     env = {**os.environ, "PATH": f"{bin_}:{os.environ['PATH']}", "T": str(tmp_path), "WD_MODE": wd_mode,
@@ -96,12 +97,15 @@ def test_the_tick_loop_does_the_same_whatever_the_watchdog_does(tmp_path, wd_mod
     assert p.returncode == 0, p.stderr
     assert events == expected_events()
     wakes = sum(e.startswith("tick ") for e in events)
-    # two checks per wake, started together in the background, so their order is not fixed
+    # three checks per wake, started together in the background, so their order is not fixed
     alerts = f"alerts_watchdog.py --state-file {runner_temp}/alerts-watchdog.json"
     tiles = (f"alerts_watchdog.py --state-file {runner_temp}/tiles-watchdog.json"
              " --health-url https://sunset-prediction.vercel.app/api/tiles-health"
              " --name tile keys --fields ok,newestKeyAgeH,lastRunAgeH,lastErrorKind --absent-ok")
-    assert sorted(watchdog) == sorted([alerts, tiles] * wakes)
+    admin = (f"alerts_watchdog.py --state-file {runner_temp}/admin-alerts-watchdog.json"
+             " --health-url https://sunset-prediction.vercel.app/api/admin-alerts-health"
+             " --name admin alerts --fields ok,lastRunAgeMin,lastOkAgeMin,held,failedEmails --absent-ok")
+    assert sorted(watchdog) == sorted([alerts, tiles, admin] * wakes)
     if wd_mode != "ok":
         assert "watchdog: gave up (exit " in p.stdout
 
@@ -110,6 +114,7 @@ def test_the_loop_starts_each_tick_without_watchdog_state(tmp_path):
     _, _, _, runner_temp = run_loop(tmp_path, "ok")
     assert not (runner_temp / "alerts-watchdog.json").exists()
     assert not (runner_temp / "tiles-watchdog.json").exists()
+    assert not (runner_temp / "admin-alerts-watchdog.json").exists()
 
 
 def test_the_watchdog_step_gets_the_key_from_the_repo_secret():

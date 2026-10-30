@@ -571,6 +571,19 @@ def column_step(deps, kit, work, run, step, group, stride, w80):
     raise KeyError(group)
 
 
+# The column feed is download-bound: 4,968 of its 6,021 worker-seconds were
+# waiting on DWD (2026-10-30), so its fetch runs more threads than the build's
+# CPU-bound BUILD_WORKERS. cdo still overlaps; netCDF reads stay serialised
+# (regrid._NC_LOCK).
+def column_fetch_workers(env=None):
+    env = os.environ if env is None else env
+    try:
+        n = int(env.get("COLUMN_FETCH_WORKERS", "16"))
+    except ValueError:
+        n = 16
+    return max(1, n)
+
+
 def fetch_columns(deps, kit, work, run, steps, workers, stride):
     """Download and remap every column field of `run` at `steps`: (static
     u16 [1][LY][LX], [(unix hour, u16 [fields][LY][LX])] in time order)."""
@@ -624,7 +637,7 @@ def build_columns(blob_dir, state, work, deps, kit, run, steps, names, workers, 
     try:
         if not _wait_for_column_files(deps, run, steps):
             return None
-        static, own = fetch_columns(deps, kit, work, run, steps, workers, stride)
+        static, own = fetch_columns(deps, kit, work, run, steps, column_fetch_workers(), stride)
         past = history.load_history_steps(state, run, sub="columns", shape=own[0][1].shape)
         stacks = past + own
         hours = [h for h, _ in stacks]

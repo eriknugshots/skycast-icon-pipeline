@@ -12,6 +12,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 TICK_RCS = [3, 3, 0, 3, 1, 3, 0, 0, 3]   # 0 = new run, 3 = current, else tick.py broke
+BUSY_LIST = "gh run list --workflow build.yml --limit 20 --json status --jq [.[] | select(.status != \"completed\")] | length"
 
 
 def loop_script():
@@ -27,17 +28,25 @@ def loop_script():
     return textwrap.dedent("\n".join(body)) + "\n"
 
 
-def expected_events():
-    """What the loop did before the watchdog: tick.py, dispatch on 0, sleep."""
-    events, clock, end, n = [], 0, 5 * 3600, 0
+def expected_events(busy=()):
+    """tick.py; on 0, ask whether a build is running, dispatch only when none
+    is; sleep. `busy` is the answers to that question, in order (0 after)."""
+    events, clock, end, n, b = [], 0, 5 * 3600, 0, 0
     while clock < end:
         rc = TICK_RCS[n] if n < len(TICK_RCS) else 3
         n += 1
         events.append(f"tick {rc}")
+        dispatched = False
         if rc == 0:
-            events.append("gh workflow run build.yml --ref main")
-        events.append(f"sleep {1800 if rc == 0 else 600}")
-        clock += 1800 if rc == 0 else 600
+            events.append(BUSY_LIST)
+            running = busy[b] if b < len(busy) else 0
+            b += 1
+            if running == 0:
+                events.append("gh workflow run build.yml --ref main")
+                dispatched = True
+        wait = 1800 if dispatched else 600
+        events.append(f"sleep {wait}")
+        clock += wait
     return events
 
 
@@ -46,7 +55,7 @@ def _stub(path, text):
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 
-def run_loop(tmp_path, wd_mode):
+def run_loop(tmp_path, wd_mode, busy=()):
     bin_ = tmp_path / "bin"
     bin_.mkdir()
     (tmp_path / "clock").write_text("0\n")
@@ -69,7 +78,15 @@ def run_loop(tmp_path, wd_mode):
         esac
         exit 99
         """))
-    _stub(bin_ / "gh", 'echo "gh $*" >> "$T/events"\n')
+    (tmp_path / "busy").write_text("".join(f"{x}\n" for x in busy))
+    (tmp_path / "busy_n").write_text("0\n")
+    _stub(bin_ / "gh", textwrap.dedent("""\
+        echo "gh $*" >> "$T/events"
+        if [ "$1 $2" = "run list" ]; then
+          n=$(cat "$T/busy_n"); echo $((n + 1)) > "$T/busy_n"
+          b=$(sed -n "$((n + 1))p" "$T/busy"); echo "${b:-0}"
+        fi
+        """))
     _stub(bin_ / "sleep", 'echo "sleep $1" >> "$T/events"; echo $(( $(cat "$T/clock") + $1 )) > "$T/clock"\n')
     _stub(bin_ / "date", 'if [ "$1" = "+%s" ]; then cat "$T/clock"; else exec /bin/date "$@"; fi\n')
     if not shutil.which("timeout"):   # macOS has no coreutils timeout; CI does
@@ -121,3 +138,12 @@ def test_the_watchdog_step_gets_the_key_from_the_repo_secret():
     text = (ROOT / ".github/workflows/tick.yml").read_text()
     assert "RESEND_ALERTS_KEY: ${{ secrets.RESEND_ALERTS_KEY }}" in text
     assert "timeout -k 5 55 python alerts_watchdog.py" in text
+
+
+def test_no_second_build_while_one_is_queued_or_running(tmp_path):
+    # the first new run finds a build still going (wait 10 min, ask again),
+    # the next answer is idle; a broken answer counts as idle
+    p, events, _, _ = run_loop(tmp_path, "ok", busy=(1, 0, "x"))
+    assert p.returncode == 0, p.stderr
+    assert events == expected_events(busy=(1, 0, 0))
+    assert "a build is already queued or running" in p.stdout

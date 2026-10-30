@@ -55,13 +55,23 @@ jobs:
             python tick.py --pages-base "$PAGES_BASE"
             rc=$?
             set -e
+            # A build already queued or running (a full one takes ~45 min,
+            # longer than the 30 min wait below) is building this run, or will
+            # be asked again in 10 min: starting another only queued a
+            # duplicate that spent ~4.5 min of setup to find the run published
+            # (2026-10-30: two pairs in one day). A failed check counts as idle.
+            busy=0
             if [ "$rc" = "0" ]; then
+              busy=$(gh run list --workflow build.yml --limit 20 --json status --jq '[.[] | select(.status != "completed")] | length' 2>/dev/null || echo 0)
+              case "$busy" in ''|*[!0-9]*) busy=0 ;; esac
+            fi
+            if [ "$rc" = "0" ] && [ "$busy" = "0" ]; then
               gh workflow run build.yml --ref main
-              # A build takes ~20 min (~7 for the clouds, ~13 for the
-              # column feed) and Pages ~1.5 more; don't ask again until the
-              # new manifest can be live. A tick that asks early anyway only
-              # queues a build that exits early.
+              # Don't ask again until the new manifest can be live.
               sleep 1800
+            elif [ "$rc" = "0" ]; then
+              echo "a build is already queued or running — not starting another"
+              sleep 600
             else
               sleep 600
             fi

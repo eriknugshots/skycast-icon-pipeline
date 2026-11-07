@@ -66,9 +66,14 @@ def test_loop_publishes_only_on_built(tmp_path):
         echo "publish" >> "$T/events"
         echo "$* token=${BLOB_READ_WRITE_TOKEN:-}" >> "$T/node_args"
         test -d ../site-hrrr || exit 98
+        n=$(cat "$T/node_n" 2>/dev/null || echo 0); echo $((n + 1)) > "$T/node_n"
+        [ "$n" = "0" ] && exit 1   # the first publish fails
+        exit 0
         """))
     _stub(bin_ / "sleep", 'echo "sleep $1" >> "$T/events"; echo $(( $(cat "$T/clock") + $1 )) > "$T/clock"\n')
     _stub(bin_ / "date", 'if [ "$1" = "+%s" ]; then cat "$T/clock"; else exec /bin/date "$@"; fi\n')
+    if not shutil.which("timeout"):   # macOS has no coreutils timeout; CI does
+        _stub(bin_ / "timeout", 'shift 3; exec "$@"\n')
     script = tmp_path / "loop.sh"
     script.write_text(loop_script())
     env = {**os.environ, "PATH": f"{bin_}:{os.environ['PATH']}", "T": str(tmp_path),
@@ -78,7 +83,19 @@ def test_loop_publishes_only_on_built(tmp_path):
                        cwd=tmp_path, env=env, capture_output=True, text=True, timeout=120)
     assert p.returncode == 0, p.stderr
     events = (tmp_path / "events").read_text().splitlines()
-    assert events == expected_events()
+    assert events == expected_events()   # the failed first publish did not stop the loop
+    assert "publish failed, will retry" in p.stdout
     assert (tmp_path / "build_args").read_text().strip() == "--out site-hrrr --live-manifest https://blob.example/manifest.json"
     assert set((tmp_path / "node_args").read_text().splitlines()) == {"blob.mjs ../site-hrrr token=tok"}
     assert not (tmp_path / "site-hrrr").exists()   # removed after the last publish pass or never left behind
+
+
+def test_workflow_text_pins():
+    text = (ROOT / ".github/workflows/hrrr.yml").read_text()
+    assert "cancel-in-progress: false" in text
+    assert "actions: write" in text
+    assert "secrets.HRRR_BLOB_READ_WRITE_TOKEN" in text
+    assert "secrets.BLOB_READ_WRITE_TOKEN" not in text
+    assert "timeout -k 10 1200 python hrrr_build.py" in text
+    redispatch = text.split("name: start the next run")[1]
+    assert "steps.loop.conclusion != 'skipped'" in redispatch.split("run:")[0]

@@ -31,6 +31,7 @@ jobs:
         with: { node-version: "22" }
       - run: cd publish && npm ci --no-audit --no-fund && node --test
       - name: watch NOAA, build each new HRRR run
+        id: loop
         env:
           PYTHONUNBUFFERED: "1"
           BLOB_READ_WRITE_TOKEN: ${{ secrets.HRRR_BLOB_READ_WRITE_TOKEN }}
@@ -38,9 +39,10 @@ jobs:
           end=$(( $(date +%s) + 5 * 3600 ))
           while [ "$(date +%s)" -lt "$end" ]; do
             # hrrr_build.py: 0 built, 3 nothing new, anything else failed. A
-            # failure is retried on the next pass, so it must not end the loop.
+            # failure (or a build killed by the 20 min timeout, exit 124/137) is
+            # retried on the next pass, so it must not end the loop.
             set +e
-            python hrrr_build.py --out site-hrrr --live-manifest "$HRRR_BASE/manifest.json"
+            timeout -k 10 1200 python hrrr_build.py --out site-hrrr --live-manifest "$HRRR_BASE/manifest.json"
             rc=$?
             set -e
             if [ "$rc" = "0" ]; then
@@ -55,7 +57,9 @@ jobs:
             sleep 300
           done
       - name: start the next run
-        if: always()
+        # Not after a broken setup step (pip, pytest, npm, node --test): that
+        # would restart a failing run at once; the 4-hourly cron restarts it.
+        if: always() && steps.loop.conclusion != 'skipped'
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow run hrrr.yml --ref main

@@ -57,13 +57,20 @@ def build(run, out_dir, get, now, sleep=time.sleep):
     out_dir = Path(out_dir)
     last = last_hour(run)
     workers = int(os.environ.get("HRRR_WORKERS", "8"))
+    # Hour 0 first: its lat/lon fix the bins for the whole run (the grid is
+    # fixed), then each worker bins its own hour and hands back only the small
+    # per-square stack, so peak memory is ~workers x one hour, not 49 hours.
+    first = _read_step(run, 0, get, sleep)
+    bins = bin_index(first["lat"], first["lon"])
+
+    def stack(fields):
+        by_field = [box_average(fields[name], bins) for name, _ in FIELDS]
+        return {n: np.stack([f[n] for f in by_field]) for n in bins}
+
+    per_step = [stack(first)]
+    del first
     with cf.ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
-        steps = list(ex.map(lambda fh: _read_step(run, fh, get, sleep), range(last + 1)))
-    bins = bin_index(steps[0]["lat"], steps[0]["lon"])   # the grid is fixed for a run
-    per_step = []
-    for s in steps:
-        by_field = [box_average(s[name], bins) for name, _ in FIELDS]
-        per_step.append({n: np.stack([f[n] for f in by_field]) for n in bins})
+        per_step += list(ex.map(lambda fh: stack(_read_step(run, fh, get, sleep)), range(1, last + 1)))
     base_hour = int(run.timestamp() // 3600)
     hours = [base_hour + fh for fh in range(last + 1)]
     tiles = out_dir / tiles_path(run)

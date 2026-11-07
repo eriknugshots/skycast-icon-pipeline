@@ -5,6 +5,8 @@ import pytest
 
 import hrrr.build as hb
 from hrrr.grib import FIELDS, file_url
+from pipeline.site import tiles_path
+from pipeline.squares import SIDE
 from hrrr.grid import SQUARES
 from pipeline.encode import decode_square
 from pipeline.squares import square_name
@@ -68,22 +70,24 @@ def test_build_writes_every_square_and_manifest(tmp_path, monkeypatch):
     want = [square_name(a, b) for a, b in SQUARES]
     assert names == want
     for n in want:
-        assert (tmp_path / "tiles" / "2026110612" / f"{n}.icl").is_file()
+        assert (tmp_path / tiles_path(run) / f"{n}.icl").is_file()
     m = json.loads((tmp_path / "manifest.json").read_text())
     base = int(run.timestamp() // 3600)
     assert m["stepsMs"] == [(base + k) * 3_600_000 for k in range(3)]
     assert m["model"] == "hrrr"
+    assert m["tiles"] == tiles_path(run) and isinstance(m["tiles"], str)
+    assert m["runMs"] == int(run.timestamp() * 1000)
     assert m["attribution"] == "Cloud data: NOAA HRRR"
     assert m["run"] == "2026-11-06T12Z"
     assert m["historySteps"] == 0
     for k in ("thick", "blocks", "columns", "tail"):
         assert k not in m
     assert m["squares"] == sorted(want)
-    far = decode_square((tmp_path / "tiles/2026110612" / f"{square_name(15, -140)}.icl").read_bytes())
+    far = decode_square((tmp_path / tiles_path(run) / f"{square_name(*SQUARES[0])}.icl").read_bytes())
     assert (far["cube"] == 255).all()
     assert far["step_hours"] == [base + k for k in range(3)]
-    near = decode_square((tmp_path / "tiles/2026110612" / f"{square_name(40, -110)}.icl").read_bytes())
-    assert near["cube"].shape == (3, 4, 41, 41)
+    near = decode_square((tmp_path / tiles_path(run) / f"{square_name(40, -110)}.icl").read_bytes())
+    assert near["cube"].shape == (3, len(FIELDS), SIDE, SIDE)
     assert (near["cube"] != 255).any()
     # the four fields land in low/mid/high/total order
     vals = sorted({int(v) for v in near["cube"][0, 0].ravel() if v != 255})
@@ -119,7 +123,7 @@ def test_cli_builds_when_live_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(hb, "last_hour", lambda run: 0)
     now = datetime(2026, 11, 6, 15, 40, tzinfo=UTC)
     monkeypatch.setattr(hrrr_build, "_now", lambda: now)
-    monkeypatch.setattr(hrrr_build, "_exists", lambda u: u.startswith(file_url(datetime(2026, 11, 6, 14, tzinfo=UTC), 18)) or True)
+    monkeypatch.setattr(hrrr_build, "_exists", lambda u: True)
     def boom(u):
         raise OSError("404")
     monkeypatch.setattr(hrrr_build, "_http_text", boom)
@@ -138,3 +142,46 @@ def test_cli_failed_build_exits_1(tmp_path, monkeypatch):
     monkeypatch.setattr(hrrr_build, "_get", bad)
     monkeypatch.setattr(hrrr_build, "_sleep", lambda s: None)
     assert hrrr_build.main(["--out", str(tmp_path)]) == 1
+
+
+def test_build_does_not_retain_full_fields(tmp_path, monkeypatch):
+    import gc
+    import weakref
+    import numpy as np
+    monkeypatch.setattr(hb, "last_hour", lambda run: 6)
+    monkeypatch.setattr(hb, "bin_index", lambda lat, lon: {})   # tiny; we only watch the arrays
+    real = hb.read_fields
+    refs = []
+
+    def tracked(run, fh, get):
+        f = real(run, fh, get)
+        refs.append(weakref.ref(f["LCDC"]))
+        return f
+
+    monkeypatch.setattr(hb, "read_fields", tracked)
+    seen = {}
+    orig = hb.box_average
+
+    def spy(values, bins):
+        gc.collect()
+        seen["live"] = max(seen.get("live", 0), sum(r() is not None for r in refs))
+        return orig(values, bins)
+
+    monkeypatch.setattr(hb, "box_average", spy)
+    monkeypatch.setenv("HRRR_WORKERS", "1")
+    run = datetime(2026, 11, 6, 12, tzinfo=UTC)
+    try:
+        hb.build(run, tmp_path, _canned_get(), run)
+    except Exception:
+        pass
+    assert len(refs) == 7
+    assert seen["live"] <= 2      # never all seven hours at once
+
+
+def test_step_stack_is_small(tmp_path, monkeypatch):
+    monkeypatch.setattr(hb, "last_hour", lambda run: 1)
+    run = datetime(2026, 11, 6, 12, tzinfo=UTC)
+    hb.build(run, tmp_path, _canned_get(), run)
+    # nothing but the 4 x 41 x 41 stacks per square reaches the encoder
+    d = decode_square((tmp_path / tiles_path(run) / f"{square_name(40, -110)}.icl").read_bytes())
+    assert d["cube"].shape == (2, len(FIELDS), SIDE, SIDE)

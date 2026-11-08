@@ -1,0 +1,56 @@
+name: places
+# Place search index from GeoNames (allCountries), monthly. The build skips
+# itself (exit 3) when the live manifest is under 25 days old, so a re-run
+# within a month does nothing; dispatch with force=true to rebuild anyway.
+# Publishes to its own Vercel Blob store (PLACES_BASE), never the ICON, HRRR or AQM one.
+on:
+  schedule:
+    - cron: "17 6 2 * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Rebuild even if the live index is under 25 days old"
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: places
+  cancel-in-progress: false
+env:
+  PLACES_BASE: https://tmqi4dwepzljptx1.public.blob.vercel-storage.com   # public URL, not a secret
+jobs:
+  places:
+    runs-on: ubuntu-24.04   # pinned: "latest" moves to a new Ubuntu under the build
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r requirements.txt
+      - run: python -m pytest -q
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - run: cd publish && npm ci --no-audit --no-fund && node --test
+      - name: build the place index if the live one is a month old
+        env:
+          PYTHONUNBUFFERED: "1"
+          FORCE: ${{ inputs.force }}
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.PLACES_BLOB_READ_WRITE_TOKEN }}
+        run: |
+          # places_build.py: 0 built, 3 index is recent (success, nothing to
+          # publish), anything else failed (the live index stays, this run goes red).
+          extra=""
+          if [ "$FORCE" = "true" ]; then extra="--force"; fi
+          set +e
+          timeout -k 10 9000 python places_build.py --out site-places --live-manifest "$PLACES_BASE/manifest.json" $extra
+          rc=$?
+          set -e
+          if [ "$rc" = "0" ]; then
+            (cd publish && node blob.mjs ../site-places)
+          elif [ "$rc" = "3" ]; then
+            echo "live place index is recent; nothing to publish"
+          else
+            echo "places_build.py failed (exit $rc)"
+            exit "$rc"
+          fi

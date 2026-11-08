@@ -100,6 +100,12 @@ def test_column_file_names_and_urls():
     assert invariant_file_name(run, "HHL", 119) == "icon_global_icosahedral_time-invariant_2026100206_119_HHL.grib2.bz2"
     assert invariant_file_name(run, "HSURF") == "icon_global_icosahedral_time-invariant_2026100206_HSURF.grib2.bz2"
     assert dir_url(run, "RELHUM_2M", "f") == "https://opendata.dwd.de/weather/nwp/icon/grib/06/relhum_2m/f"
+    # WW (present weather, WMO 4677) is a single-level field like T_2M, under grib/<HH>/ww/.
+    from pipeline.dwd import file_name, column_files, COLUMN_SFIELDS
+    assert "WW" in COLUMN_SFIELDS
+    assert file_name(run, 7, "WW") == "icon_global_icosahedral_single-level_2026100206_007_WW.grib2.bz2"
+    assert dir_url(run, "WW", "f") == "https://opendata.dwd.de/weather/nwp/icon/grib/06/ww/f"
+    assert column_files(run, [7])["WW"] == [file_name(run, 7, "WW")]
     assert 975 not in COLUMN_PLEVELS and COLUMN_PLEVELS == sorted(COLUMN_PLEVELS, reverse=True)
     # The HHL half levels are exactly the bounds of the model levels used.
     assert COLUMN_HHL_LEVELS == sorted({lv for m in COLUMN_MLEVELS for lv in (m, m + 1)})

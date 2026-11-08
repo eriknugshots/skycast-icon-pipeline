@@ -436,7 +436,7 @@ def column_keys():
     keys = []
     for p in dwd.COLUMN_PLEVELS:
         keys += [("T", p), ("RELHUM", p), ("FI", p)]
-    return keys + [("T_2M", None), ("RELHUM_2M", None), ("T_80M", None)]
+    return keys + [("T_2M", None), ("RELHUM_2M", None), ("T_80M", None), ("WW", None)]
 
 
 def column_spec():
@@ -452,6 +452,8 @@ def _to_codes(key, arr):
         return columns.quantize(arr, *columns._QUANT[columns.RH])
     if field == "FI":
         return columns.quantize(arr / G, *columns._QUANT[columns.GH])
+    if field == "WW":                    # a WMO 4677 code: whole, 0..99, NaN → missing
+        return columns.quantize(np.clip(np.rint(arr), 0, 99), *columns._QUANT[columns.WW])
     raise KeyError(field)
 
 
@@ -514,9 +516,10 @@ def _clock(what, t0):
         _CLOCK[what] = _CLOCK.get(what, 0.0) + time.monotonic() - t0
 
 
-def _fetch_levels(deps, kit, work, names, run, field, stride):
+def _fetch_levels(deps, kit, work, names, run, field, stride, nearest=False):
     """Download DWD files of ONE parameter → {level: lattice array}: one cdo
-    decode for all of them, then DWD's weights at the lattice's points."""
+    decode for all of them, then DWD's weights at the lattice's points
+    (`nearest`: the heaviest link, for a categorical field)."""
     paths = []
     try:
         for n in names:
@@ -526,7 +529,8 @@ def _fetch_levels(deps, kit, work, names, run, field, stride):
             _clock("download", t0)
             paths.append(dst)
         t0 = time.monotonic()
-        out = deps.lattice_levels(paths, kit, work, stride)
+        out = (deps.lattice_levels(paths, kit, work, stride, nearest=True) if nearest
+               else deps.lattice_levels(paths, kit, work, stride))
         _clock("remap", t0)
         return out
     finally:
@@ -560,7 +564,8 @@ def column_step(deps, kit, work, run, step, group, stride, w80):
             raise ValueError(f"{group} +{step}: levels {sorted(levels, key=str)}, wanted {dwd.COLUMN_PLEVELS}")
         return {(group, lv): _to_codes((group, lv), levels[lv]) for lv in dwd.COLUMN_PLEVELS}
     if group in dwd.COLUMN_SFIELDS:
-        arr = _only(_fetch_levels(deps, kit, work, [dwd.file_name(run, step, group)], run, group, stride))
+        arr = _only(_fetch_levels(deps, kit, work, [dwd.file_name(run, step, group)], run, group, stride,
+                                  nearest=group == "WW"))
         return {(group, None): _to_codes((group, None), arr)}
     if group == "T_80M":
         t80 = 0.0
@@ -638,7 +643,10 @@ def build_columns(blob_dir, state, work, deps, kit, run, steps, names, workers, 
         if not _wait_for_column_files(deps, run, steps):
             return None
         static, own = fetch_columns(deps, kit, work, run, steps, column_fetch_workers(), stride)
-        past = history.load_history_steps(state, run, sub="columns", shape=own[0][1].shape)
+        # pad: a head saved before a field was appended (WW, 2026-11-07) is
+        # still six good hours, the new field missing.
+        past = history.load_history_steps(state, run, sub="columns", shape=own[0][1].shape,
+                                          pad=columns.MISSING)
         stacks = past + own
         hours = [h for h, _ in stacks]
         base = history.hour_of(run)

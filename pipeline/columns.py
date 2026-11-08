@@ -35,20 +35,25 @@ _HEADER = struct.Struct("<4shhHHHHH")   # magic, swLat, swLon, spacing mdeg, col
 _FIELD = struct.Struct("<BBHff")        # kind, levelType, level, scale, offset
 
 # Kinds. Units are the app's (Open-Meteo's): °C, %, metres above sea level.
-T, RH, GH, HSURF = 1, 2, 3, 4
-KIND_NAMES = {T: "T", RH: "RH", GH: "GH", HSURF: "HSURF"}
+T, RH, GH, HSURF, WW = 1, 2, 3, 4, 5
+KIND_NAMES = {T: "T", RH: "RH", GH: "GH", HSURF: "HSURF", WW: "WW"}
 # Level types. STATIC fields hold one value per node, not one per step.
 STATIC, PRESSURE_HPA, HEIGHT_AGL_M = 0, 1, 2
 
 # Resolution per kind: 0.1 °C (the app's inversion test needs a 0.5 °C rise
-# between levels; Open-Meteo also answers in 0.1 °C), 1 % RH, 1 m height.
-_QUANT = {T: (0.1, -150.0), RH: (1.0, 0.0), GH: (1.0, -1000.0), HSURF: (1.0, -1000.0)}
+# between levels; Open-Meteo also answers in 0.1 °C), 1 % RH, 1 m height;
+# WW is the WMO 4677 code itself (0-99).
+_QUANT = {T: (0.1, -150.0), RH: (1.0, 0.0), GH: (1.0, -1000.0), HSURF: (1.0, -1000.0),
+          WW: (1.0, 0.0)}
 
 
 def field_spec(plevels):
     """The field table, in body order: per pressure level (high pressure
-    first) T, RH, GH; then T at 2 m, RH at 2 m, T at 80 m; then the static
-    model surface height. [(kind, levelType, level, scale, offset)]"""
+    first) T, RH, GH; then T at 2 m, RH at 2 m, T at 80 m, the present-
+    weather code WW; then the static model surface height. New dynamic
+    fields go LAST among the dynamic ones, so a saved history head's fields
+    stay a prefix of today's (history.load_history_steps pads the rest).
+    [(kind, levelType, level, scale, offset)]"""
     out = []
     for p in plevels:
         for k in (T, RH, GH):
@@ -56,6 +61,7 @@ def field_spec(plevels):
     out.append((T, HEIGHT_AGL_M, 2) + _QUANT[T])
     out.append((RH, HEIGHT_AGL_M, 2) + _QUANT[RH])
     out.append((T, HEIGHT_AGL_M, 80) + _QUANT[T])
+    out.append((WW, HEIGHT_AGL_M, 0) + _QUANT[WW])
     out.append((HSURF, STATIC, 0) + _QUANT[HSURF])
     return out
 

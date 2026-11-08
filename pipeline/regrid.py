@@ -223,17 +223,49 @@ class LatticeRemap:
     def shape(self):
         return (self.ly, self.lx)
 
-    def apply(self, cells):
-        """ICON values [src cells] → float32 [ly][lx], NaN where missing."""
+    def _cells(self, cells):
         cells = np.asarray(cells)
         if cells.shape != (self.src_size,):
             raise ValueError(f"field has {cells.shape} cells, the weights {self.src_size}")
+        return cells
+
+    def apply_nearest(self, cells):
+        """For a CATEGORICAL field (WW): at each point the source of its
+        heaviest link, never a blend — float32 [ly][lx], NaN where that
+        source is missing or the point has no link. See lattice_nearest."""
+        cells = self._cells(cells)
+        n = self.ly * self.lx
+        if not hasattr(self, "_heaviest"):
+            # Links sorted by point, heaviest first (ties: the first listed).
+            order = np.lexsort((np.arange(self.w.size), -self.w, self.node))
+            first = np.ones(order.size, dtype=bool)
+            first[1:] = self.node[order][1:] != self.node[order][:-1]
+            self._heaviest = (self.node[order][first], self.src[order][first])
+        node, src = self._heaviest
+        out = np.full(n, np.nan)
+        out[node] = cells[src].astype(np.float64)
+        return out.astype(np.float32).reshape(self.ly, self.lx)
+
+    def apply(self, cells):
+        """ICON values [src cells] → float32 [ly][lx], NaN where missing."""
+        cells = self._cells(cells)
         n = self.ly * self.lx
         v = cells[self.src].astype(np.float64)
         bad = ~np.isfinite(v)
         out = np.bincount(self.node, weights=np.where(bad, 0.0, v) * self.w, minlength=n)
         out[(np.bincount(self.node, weights=bad, minlength=n) > 0) | self.empty] = np.nan
         return out.astype(np.float32).reshape(self.ly, self.lx)
+
+
+def lattice_nearest(values, weights):
+    """The categorical counterpart of the weighted sum: values, weights
+    [..][links] → [..], at each point the value of its largest-weight link
+    (the first on a tie), NaN if that value is NaN. For codes such as WW,
+    where 0.4 · 3 + 0.6 · 61 = 37.8 would be another code entirely."""
+    values = np.asarray(values, dtype=np.float64)
+    weights = np.asarray(weights, dtype=np.float64)
+    i = np.argmax(weights, axis=-1)[..., None]
+    return np.take_along_axis(values, i, axis=-1)[..., 0]
 
 
 _REMAPS = {}
@@ -249,11 +281,12 @@ def lattice_remap(kit, stride):
         return _REMAPS[key]
 
 
-def lattice_levels(gribs_bz2, kit, work, stride, run=subprocess.run, remap=None):
+def lattice_levels(gribs_bz2, kit, work, stride, run=subprocess.run, remap=None, nearest=False):
     """Several DWD .grib2.bz2 of ONE parameter → {level: float32 [LY][LX]}
     on the column lattice: one cdo decode of the cat'ed files, then the
-    lattice's share of DWD's weights. `run` and `remap` are injected for
-    tests."""
+    lattice's share of DWD's weights — summed, or with `nearest` (a
+    categorical field: WW) the heaviest link's value. `run` and `remap` are
+    injected for tests."""
     remap = remap or lattice_remap(kit, stride)
     work = Path(work)
     gribs_bz2 = [Path(g) for g in gribs_bz2]
@@ -267,7 +300,8 @@ def lattice_levels(gribs_bz2, kit, work, stride, run=subprocess.run, remap=None)
                         g.write(chunk)
         run(copy_command(grib, nc), check=True)
         cells = levels_from_netcdf(nc, (remap.src_size,))
-        return {lv: remap.apply(a) for lv, a in cells.items()}
+        apply = remap.apply_nearest if nearest else remap.apply
+        return {lv: apply(a) for lv, a in cells.items()}
     finally:
         grib.unlink(missing_ok=True)
         nc.unlink(missing_ok=True)

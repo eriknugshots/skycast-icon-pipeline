@@ -32,6 +32,7 @@ DWD ICON global open data (listing of `grib/00/*` checked 2026-10-02 by the
 | relative_humidity_2m | `single-level_…_RELHUM_2M` | 2 m | yes |
 | **temperature_80m** | **no 80 m field in ICON open data** | — | interpolated (below) |
 | elevation | `time-invariant_…_HSURF` | surface | yes |
+| weather code (fog, rain, snow, thunder) | `single-level_…_WW` (dir `ww`) | surface | yes (2026-11-07), nearest-neighbour |
 | (for T 80 m) | `model-level_…_<lev>_T` (dir `t`), levels 1–120 | 117, 118, 119 | yes |
 | (for T 80 m) | `time-invariant_…_<lev>_HHL` (dir `hhl`), half levels 1–121 | 117–120 | yes |
 | (not used) | `single-level_…_T_G` (ground temperature) | surface | no: a skin temperature, not air at 80 m |
@@ -200,14 +201,15 @@ All integers little-endian.
 Field table:
 
 - kind: 1 = temperature (°C), 2 = relative humidity (%), 3 = geopotential
-  height (m above sea level), 4 = model surface height HSURF (m above sea level).
+  height (m above sea level), 4 = model surface height HSURF (m above sea level),
+  5 = present weather WW (a WMO 4677 code, 0–99; added 2026-11-07).
 - levelType: 0 = static (one value per node, no time axis), 1 = pressure
   (level in hPa), 2 = height above the model surface (level in m).
 - value = offset + scale × code (scale and offset as stored, f32);
   **code 65535 = missing** (NaN in DWD's field, or a NaN after remapping).
   Codes are clamped to 0…65534.
 
-Today's table (F = 25), in body order:
+Today's table (F = 26), in body order:
 
 | # | kind | levelType | level | scale | offset |
 |---|---|---|---|---|---|
@@ -215,9 +217,22 @@ Today's table (F = 25), in body order:
 | 21 | 1 (T) | 2 | 2 | 0.1 | −150 |
 | 22 | 2 (RH) | 2 | 2 | 1 | 0 |
 | 23 | 1 (T) | 2 | 80 | 0.1 | −150 |
-| 24 | 4 (HSURF) | 0 | 0 | 1 | −1000 |
+| 24 | 5 (WW) | 2 | 0 | 1 | 0 |
+| 25 | 4 (HSURF) | 0 | 0 | 1 | −1000 |
 
-A decoder must read the table, not assume this order.
+A decoder must read the table, not assume this order. New dynamic fields are
+appended after the last dynamic one (before the static HSURF), so a saved
+history head (state/columns/) holds a PREFIX of today's fields:
+`history.load_history_steps(…, pad=65535)` reads such a head with the new
+fields missing instead of dropping its six hours.
+
+**WW.** ICON's `ww` is the WMO 4677 present-weather subset ICON emits: 0–3
+cloud states, 45/48 fog, 51–57 drizzle, 61–67 rain, 71–77 snow, 80–86
+showers, 95/96 thunder. It is CATEGORICAL — a weighted sum of 3 and 61 is
+37.8, a code of its own — so it is remapped nearest-neighbour: each node
+takes the source cell of its heaviest DWD weight link (`LatticeRemap.
+apply_nearest`, `regrid.lattice_nearest`), NaN if that cell is missing, and
+the code is stored whole (rounded, clipped to 0…99; missing = 65535).
 
 Body: `zlib` (the browser's `DecompressionStream('deflate')`, as for ICL1) of
 `2·N` bytes, N = Σ over fields of rows·cols·(S, or 1 if static). The first N
@@ -294,7 +309,8 @@ first), into `blob/`, and published by the existing Blob step
 2. HSURF and HHL 117–120 (once per run) → surface height and the T80 weights.
 3. Per step, in the build's worker pool: T, RELHUM and FI each as one cdo
    call over all seven levels (the GRIB files are concatenated), T_2M,
-   RELHUM_2M, and model-level T 117, 118 and 119 → T80. Each field is quantised
+   RELHUM_2M, WW (nearest link, not summed), and model-level T 117, 118
+   and 119 → T80. Each field is quantised
    at once, so memory is the lattice, not the 0.125° grid.
 
 **Remap straight onto the nodes.** The cloud squares remap with

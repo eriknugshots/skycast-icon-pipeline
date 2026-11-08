@@ -74,11 +74,16 @@ def test_byte_layout_is_the_documented_one():
 
 def test_field_table_names_the_app_fields_and_units():
     spec = field_spec(PLEVELS)
-    T, RH, GH, HS = columns.T, columns.RH, columns.GH, columns.HSURF
+    T, RH, GH, HS, WW = columns.T, columns.RH, columns.GH, columns.HSURF, columns.WW
     P, H = columns.PRESSURE_HPA, columns.HEIGHT_AGL_M
     assert [(k, lt, lv) for k, lt, lv, _, _ in spec] == (
-        [(k, P, p) for p in PLEVELS for k in (T, RH, GH)] + [(T, H, 2), (RH, H, 2), (T, H, 80), (HS, STATIC, 0)])
-    assert len(spec) == 3 * len(PLEVELS) + 4
+        [(k, P, p) for p in PLEVELS for k in (T, RH, GH)]
+        + [(T, H, 2), (RH, H, 2), (T, H, 80), (WW, H, 0), (HS, STATIC, 0)])
+    assert len(spec) == 3 * len(PLEVELS) + 5
+    # WW: the WMO 4677 code itself, scale 1, offset 0, appended LAST among the
+    # dynamic fields so an older head's fields are a prefix of today's.
+    assert WW == 5 and columns.KIND_NAMES[WW] == "WW"
+    assert spec[-2] == (WW, H, 0, 1.0, 0.0)
 
 
 def test_missing_is_the_sentinel_both_ways():

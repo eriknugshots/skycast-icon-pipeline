@@ -77,10 +77,29 @@ def prune(state, current_id, sub="history"):
             p.unlink()
 
 
-def load_history_steps(state, run, sub="history", shape=None):
+def _fit(head, shape, pad):
+    """head [k][fields..] → the same with `shape` per hour, or None. With
+    `pad`, a head with FEWER fields on the same lattice (saved before a field
+    was appended to the end of the list) gets the new trailing fields filled
+    with `pad`; anything else of another layout is None."""
+    if shape is None or tuple(head.shape[1:]) == tuple(shape):
+        return head
+    shape = tuple(shape)
+    if pad is None or head.ndim != len(shape) + 1 or tuple(head.shape[2:]) != shape[1:] \
+            or head.shape[1] >= shape[0]:
+        return None
+    out = np.full((head.shape[0],) + shape, pad, dtype=head.dtype)
+    out[:, :head.shape[1]] = head
+    return out
+
+
+def load_history_steps(state, run, sub="history", shape=None, pad=None):
     """[(unix_hour, uint8 [4][NY][NX]), ...] ascending, for hours in
     [run - HISTORY_HOURS, run). Later runs win where two runs share an hour
-    (they never do at 6-hourly runs with 6-hour heads, but be safe)."""
+    (they never do at 6-hourly runs with 6-hour heads, but be safe).
+    shape: the per-hour shape wanted; heads of another layout are skipped,
+    except that with `pad` a head whose field axis is a shorter prefix is
+    padded (see _fit) — the column feed's fields are only ever appended."""
     d = history_dir(state, sub)
     if not d.exists():
         return []
@@ -90,7 +109,8 @@ def load_history_steps(state, run, sub="history", shape=None):
         with np.load(p) as z:
             base = int(z["run_hour"])
             head = z["head"]
-        if shape is not None and tuple(head.shape[1:]) != tuple(shape):
+        head = _fit(head, shape, pad)
+        if head is None:
             continue                       # another layout (e.g. another column stride or field list)
         for i in range(head.shape[0]):
             h = base + i

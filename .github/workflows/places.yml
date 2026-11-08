@@ -37,6 +37,9 @@ jobs:
           PYTHONUNBUFFERED: "1"
           FORCE: ${{ inputs.force }}
           BLOB_READ_WRITE_TOKEN: ${{ secrets.PLACES_BLOB_READ_WRITE_TOKEN }}
+          # About 90 a second tripped Blob's limit; a re-run the same day sends only what is missing.
+          BLOB_UPLOADS_PER_SEC: "40"
+          BLOB_SKIP_EXISTING: "1"
         run: |
           # places_build.py: 0 built, 3 index is recent (success, nothing to
           # publish), anything else failed (the live index stays, this run goes red).

@@ -23,6 +23,7 @@ import { join, relative, sep } from 'node:path';
 import { put, list, del } from '@vercel/blob';
 import { pathsToDelete } from './prune.mjs';
 import { planRoots } from './roots.mjs';
+import { createRetry, paceDelay, filesToSend } from './pace.mjs';
 
 const YEAR_S = 365 * 24 * 3600;
 const MANIFEST_S = 60;            // Blob's shortest cache time
@@ -40,14 +41,9 @@ async function walk(dir, out = []) {
   return out;
 }
 
-async function retry(what, fn) {
-  for (let i = 1; ; i++) {
-    try { return await fn(); } catch (e) {
-      if (i >= ATTEMPTS) throw new Error(`${what}: ${e.message || e}`);
-      await new Promise((r) => setTimeout(r, 500 * 2 ** i));
-    }
-  }
-}
+const retry = createRetry({ attempts: ATTEMPTS });
+// Uploads a second, for a publish too big for Blob's limit (places.yml); unset means no limit.
+const PER_SEC = Number(process.env.BLOB_UPLOADS_PER_SEC) || 0;
 
 async function pool(items, n, fn) {
   let next = 0;
@@ -93,7 +89,11 @@ async function main() {
   const t0 = Date.now();
   const bytesByDir = Object.fromEntries(dirs.map((d) => [d, 0]));
   const countByDir = Object.fromEntries(dirs.map((d) => [d, 0]));
-  await pool(files, CONCURRENCY, async ({ path, dir }) => {
+  const send = filesToSend(files, before.map((b) => b.pathname), process.env.BLOB_SKIP_EXISTING === '1');
+  if (send.length !== files.length) console.log(`resuming: ${files.length - send.length} files already in the store`);
+  await pool(send, CONCURRENCY, async ({ path, dir }, k) => {
+    const wait = paceDelay(k, PER_SEC, t0, Date.now());
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
     const body = await readFile(join(dir, path));
     bytesByDir[dir] += body.length;
     countByDir[dir] += 1;
@@ -103,7 +103,7 @@ async function main() {
     }));
   });
   const bytes = Object.values(bytesByDir).reduce((a, b) => a + b, 0);
-  console.log(`uploaded ${files.length} files, ${(bytes / 1e6).toFixed(0)} MB in ${((Date.now() - t0) / 1000).toFixed(0)} s (`
+  console.log(`uploaded ${send.length} files, ${(bytes / 1e6).toFixed(0)} MB in ${((Date.now() - t0) / 1000).toFixed(0)} s (`
     + dirs.map((d) => `${d}: ${countByDir[d]} files, ${(bytesByDir[d] / 1e6).toFixed(0)} MB`).join('; ') + ')');
 
   await retry('manifest.json', async () => put('manifest.json', await readFile(join(manifestDir, 'manifest.json')), {

@@ -38,12 +38,8 @@ def run(tmp_path, rows, **kw):
 
 
 def rows_of(out, m, key):
-    """What the app does: the shortest non-split prefix's file, filtered."""
-    split = set(m["split"])
-    prefix = key[:1]
-    while prefix in split and len(prefix) < len(key):
-        prefix = key[: len(prefix) + 1]
-    f = out / m["tiles"] / (key_file(prefix) + ".tsv")
+    """What the app does: open shard_for's file, filter by prefix."""
+    f = out / m["tiles"] / pb.shard_for(key, set(m["split"]))
     if not f.exists():
         return []
     cols = [l.split("\t") for l in f.read_text().splitlines()]
@@ -113,30 +109,83 @@ def test_alternates(tmp_path):
     assert rows_of(out, m, "koeln")
 
 
-def test_trie_splits_oversize_prefixes(tmp_path):
+def tile_files(out, m):
+    return {f.name: f for f in (out / m["tiles"]).iterdir()}
+
+
+def test_shard_for_resolution():
+    split = {"s", "sa", "san"}
+    assert pb.shard_for("sa", split) == "sa.tsv"
+    assert pb.shard_for("san", split) == "san.tsv"
+    assert pb.shard_for("sant", split) == "san~.tsv"
+    assert pb.shard_for("sanfrancisco", split) == "san~.tsv"
+    assert pb.shard_for("sb", split) == "s~.tsv"
+    assert pb.shard_for("qx", split) == "~.tsv"
+    assert pb.shard_for("東京", {"東"}) == "x6771~.tsv"
+
+
+def test_small_siblings_share_one_tilde_file(tmp_path):
     rows = [gn(i, "Spring%04d" % i, pop=i) for i in range(1, 400)]
-    rows += [gn(1000, "Qx", pop=1)]
+    rows += [gn(1000 + i, n, pop=1) for i, n in enumerate(["Qx", "Quad", "Ruby", "Rock", "Tango"])]
     out, m = run(tmp_path, rows, max_shard_bytes=4000, top_n=10)
+    files = tile_files(out, m)
     split = set(m["split"])
-    assert "s" in split and "sp" in split and "q" not in split
-    assert (out / m["tiles"] / "q.tsv").exists()
-    top = (out / m["tiles"] / "s.tsv").read_text().splitlines()
-    assert len(top) == 10
-    assert top[0].split("\t")[1] == "Spring0399"
-    for f in (out / m["tiles"]).iterdir():
-        key = f.stem
-        if key not in {key_file(k) for k in split}:
-            assert f.stat().st_size <= 4000, f
-    # a child extends its parent by one character
-    for k in split:
-        assert (out / m["tiles"] / (key_file(k) + ".tsv")).exists()
-    assert rows_of(out, m, "spring0150")[0][1] == "Spring0150"
+    assert "s" in split and "sp" in split
+    assert not split & {"q", "r", "t"}
+    root = files["~.tsv"].read_text().splitlines()
+    keys = {l.split("\t")[0] for l in root}
+    assert {"qx", "quad", "ruby", "rock", "tango"} <= keys    # five siblings, one file
+    assert "q.tsv" not in files and "r.tsv" not in files
+    assert not any(k.startswith("spring") for k in keys)       # the big one left
+    top = files["s.tsv"].read_text().splitlines()
+    assert len(top) == 10 and top[0].split("\t")[1] == "Spring0399"
+
+
+def test_oversize_sibling_group_forces_the_largest_out(tmp_path):
+    rows = []
+    for ch, n in (("a", 60), ("b", 40), ("c", 20), ("d", 5), ("e", 5)):
+        rows += [gn(len(rows) + i, f"{ch}{i:04d}x{'y' * 20}", pop=i) for i in range(n)]
+    out, m = run(tmp_path, rows, max_shard_bytes=6000, top_n=5)
+    files = tile_files(out, m)
+    split = set(m["split"])
+    assert "a" in split                    # the largest goes first
+    assert "d" not in split and "e" not in split
+    assert files["~.tsv"].stat().st_size <= 6000
+    assert len(rows_of(out, m, "d0000")) == 1 and len(rows_of(out, m, "a0059")) == 1
+
+
+def test_resolution_contract_every_key_finds_its_row(tmp_path):
+    names = ["Santa Cruz", "San Diego", "San Francisco", "Santa Fe", "Sant Antoni", "Sandpoint",
+            "Saint Paul", "Sa", "Sanaa", "Mount Bachelor", "東京", "京都", "Zzz", "Zürich"]
+    rows = [gn(i, n, pop=i) for i, n in enumerate(names)]
+    rows += [gn(100 + i, "San%03d" % i, pop=i) for i in range(150)]
+    out, m = run(tmp_path, rows, max_shard_bytes=2500, top_n=1000)
+    split = set(m["split"])
+    assert split
+    seen = 0
+    # rebuild the row list the way the build keyed it, then check each resolves
+    from places.build import place_rows
+    for r in rows:
+        p = r.split("\t")
+        for key, _rank, row in place_rows(p[1], p[3], "x", p[7], 0):
+            if len(key) < 2:
+                continue
+            f = out / m["tiles"] / pb.shard_for(key, split)
+            assert f.exists(), (key, f.name)
+            assert any(l.split("\t")[0] == key and l.split("\t")[1] == row.split("\t")[1]
+                       for l in f.read_text().splitlines()), (key, f.name)
+            seen += 1
+    assert seen > 150
+    # a rare first character lands in the root file
+    assert pb.shard_for("zzz", split) in ("~.tsv", "z~.tsv", "zz~.tsv", "zzz.tsv")
 
 
 def test_unsplittable_key_may_exceed_the_cap(tmp_path):
     rows = [gn(i, "Same", pop=i) for i in range(1, 300)]
     out, m = run(tmp_path, rows, max_shard_bytes=2000, top_n=5)
-    assert len(rows_of(out, m, "same")) == 299
+    files = tile_files(out, m)
+    assert len(files["same~.tsv"].read_text().splitlines()) == 299   # over the cap, as allowed
+    assert len(files["same.tsv"].read_text().splitlines()) == 5      # the top N
 
 
 def test_elevation_falls_back_to_dem_and_dem_minus_9999_is_blank(tmp_path):

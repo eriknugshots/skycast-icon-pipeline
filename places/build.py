@@ -2,15 +2,17 @@
 #
 # Output (the contract the app reads):
 #   manifest.json                         written LAST
-#   tiles/<version>/<key_file(k)>.tsv     rows: key, name, lat, lon, feature,
+#   tiles/<version>/<file>.tsv            rows: key, name, lat, lon, feature,
 #                                         country_code, country, admin1,
 #                                         population, elevation, timezone;
 #                                         best first
 # manifest = {version, runMs, builtMs, complete: true, tiles, split, attribution}.
-# `split` lists every key whose rows did not fit one file. A split key's own file
-# holds the TOP_N best rows of its subtree (plus its TOP_N best rows whose key is
-# exactly that key); its children extend the key by one character. A reader takes
-# the shortest prefix of the query that is NOT in `split` and opens that file.
+# `split` lists every key that has its own node (the root '' is always one and is
+# not listed). For a split key k: `key_file(k)~.tsv` (root: `~.tsv`) holds every row
+# of k's subtree except those under a child that is itself split; for k != ''
+# `key_file(k).tsv` holds the TOP_N best of k's whole subtree (plus its TOP_N best
+# rows whose key is exactly k). Children are split off largest first until what
+# remains fits MAX_SHARD_BYTES. Resolve a query key with shard_for().
 #
 # Every GeoNames row is kept, of every class, at any population, in any script.
 # Each place yields: a row for its name; a row per alternate name (name shown =
@@ -177,6 +179,19 @@ def _can_extend(prefix):
     return len(prefix) < MAX_PREFIX and len(key_file(prefix)) < MAX_STEM
 
 
+def shard_for(key, split):
+    """The file (name with .tsv) a reader opens for query key `key`; `split` is
+    the manifest's set of split keys. Extend s while the next prefix of the key
+    is split; if s is the whole key read its top file, else read s's '~' file
+    (every row under s whose child is not split) and filter by prefix."""
+    s = ""
+    while len(s) < len(key) and key[: len(s) + 1] in split:
+        s = key[: len(s) + 1]
+    if s == key:
+        return key_file(s) + ".tsv"
+    return key_file(s) + "~.tsv"
+
+
 class _Writer:
     def __init__(self, tiles, max_shard, top_n, tmp):
         self.tiles = tiles
@@ -187,31 +202,23 @@ class _Writer:
         self.files = 0
         self.bytes = 0
         self.biggest = (0, "")
-        self.oversize = []     # (bytes, key) of files over max_shard
+        self.oversize = []     # (bytes, file stem) of files over max_shard
 
-    def emit(self, prefix, lines):
+    def emit(self, stem, lines):
         data = b"".join(l[PREFIX_LEN:] + b"\n" for l in lines)
-        stem = key_file(prefix)
         (self.tiles / (stem + ".tsv")).write_bytes(data)
         self.files += 1
         self.bytes += len(data)
         if len(data) > self.biggest[0]:
-            self.biggest = (len(data), prefix)
+            self.biggest = (len(data), stem)
         if len(data) > self.max_shard:
-            self.oversize.append((len(data), prefix))
+            self.oversize.append((len(data), stem))
 
-    def leaf(self, path):
-        lines = path.read_bytes().split(b"\n")[:-1]
-        lines.sort()
-        return lines
-
-    def process(self, prefix, size, bk_dir):
+    def node(self, prefix, bk_dir):
+        """A split key: partition its bucket by the next character, then finish."""
         path = Path(bk_dir) / (_stem(prefix) + ".b")
-        if size <= self.max_shard or not _can_extend(prefix):
-            self.emit(prefix, self.leaf(path))
-            path.unlink()
-            return
         n = len(prefix)
+        ext = _can_extend(prefix)
         child = Buckets(self.tmp / ("c" + _stem(prefix)))
         top, exact = [], []
         keep = self.top_n * 8
@@ -222,25 +229,37 @@ class _Writer:
                 top.append(line)
                 if len(top) > keep:
                     top = heapq.nsmallest(self.top_n, top)
-                if len(key) > n:
+                if ext and len(key) > n:
                     child.add_raw(key[: n + 1], line + b"\n")
                 else:
                     exact.append(line)
-                    if len(exact) > keep:
-                        exact = heapq.nsmallest(self.top_n, exact)
-        child.flush()
-        if not child.size:
-            # every row is exactly this key: it cannot split further
-            shutil.rmtree(child.dir, ignore_errors=True)
-            self.emit(prefix, self.leaf(path))
-            path.unlink()
-            return
-        best = sorted(set(heapq.nsmallest(self.top_n, top) + heapq.nsmallest(self.top_n, exact)))
-        self.split.append(prefix)
-        self.emit(prefix, best)
         path.unlink()
-        for cp in sorted(child.size):
-            self.process(cp, child.size[cp], child.dir)
+        child.flush()
+        self.finish(prefix, exact, child, top)
+
+    def finish(self, prefix, exact, child, top):
+        sizes = child.size
+        remaining = sum(len(l) - PREFIX_LEN + 1 for l in exact) + sum(sizes.values())
+        splitc = []
+        for c in sorted(sizes, key=lambda c: (-sizes[c], c)):
+            if remaining <= self.max_shard:
+                break
+            splitc.append(c)
+            remaining -= sizes[c]
+        rest = list(exact)
+        for c in sizes:
+            if c not in splitc:
+                cp = child.path(c)
+                rest.extend(cp.read_bytes().split(b"\n")[:-1])
+                cp.unlink()
+        rest.sort()
+        self.emit(key_file(prefix) + "~", rest)
+        if prefix:
+            self.split.append(prefix)
+            best = set(heapq.nsmallest(self.top_n, top)) | set(heapq.nsmallest(self.top_n, exact))
+            self.emit(key_file(prefix), sorted(best))
+        for c in sorted(splitc):
+            self.node(c, child.dir)
         shutil.rmtree(child.dir, ignore_errors=True)
 
 
@@ -298,8 +317,7 @@ def build(zip_path, out_dir, admin1_text, countries_text, now=None,
         shutil.rmtree(tiles)
     tiles.mkdir(parents=True)
     w = _Writer(tiles, max_shard_bytes, top_n, tmp)
-    for prefix in sorted(root.size):
-        w.process(prefix, root.size[prefix], root.dir)
+    w.finish("", [], root, [])
     shutil.rmtree(tmp, ignore_errors=True)
     run_ms = int((time.time() - t0) * 1000)
     manifest = {

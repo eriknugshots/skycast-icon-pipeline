@@ -1,0 +1,107 @@
+name: gfs
+# GFS Direct: our own worldwide cloud-cover feed from NOAA's GFS (step 3 of the
+# app's own weather feeds). Like tick.yml, one run watches for 5 hours and then
+# starts the next (a workflow may dispatch workflows with its own token); the
+# schedule only restarts the chain if it ever breaks. Runs are 6 h apart, so the
+# loop checks every 10 minutes. A build runs inline, up to 45 minutes.
+# Publishes to its own Vercel Blob store (GFS_BASE), never another feed's.
+# The build's history lives on the orphan branch state-gfs (fetched into state/
+# before the loop, force-pushed after each successful publish).
+on:
+  schedule:
+    - cron: "17 */4 * * *"
+  workflow_dispatch:
+permissions:
+  actions: write
+  contents: write
+concurrency:
+  group: gfs
+  cancel-in-progress: false
+env:
+  GFS_BASE: https://uzvgpik9wskfmyfe.public.blob.vercel-storage.com   # public URL, not a secret
+jobs:
+  gfs:
+    runs-on: ubuntu-24.04   # pinned: "latest" moves to a new Ubuntu under the build
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r requirements.txt
+      - run: python -m pytest -q
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - run: cd publish && npm ci --no-audit --no-fund && node --test
+      - name: fetch state (history from earlier runs; absent on the first build)
+        id: state
+        # A state branch that exists but cannot be fetched must not be
+        # overwritten by a near-empty one: build without history and skip the
+        # state push (keep=1). ls-remote exits 2 when the branch is absent (the
+        # first push creates it), anything else non-zero when GitHub did not answer.
+        run: |
+          set +e
+          git ls-remote --exit-code --heads origin state-gfs >/dev/null 2>&1
+          ls=$?
+          set -e
+          if [ "$ls" = "2" ]; then
+            mkdir -p state
+          else
+            for i in 1 2 3; do git fetch --depth 1 origin state-gfs && break; sleep $((i * 10)); done
+            if git rev-parse -q --verify origin/state-gfs >/dev/null; then
+              git worktree add state origin/state-gfs
+            else
+              echo "::warning::state-gfs could not be fetched (ls-remote $ls) — building without history, keeping the saved state"
+              mkdir -p state
+              echo "keep=1" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+      - name: watch GFS, build each new run
+        id: loop
+        env:
+          PYTHONUNBUFFERED: "1"
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.GFS_BLOB_READ_WRITE_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          STATE_KEEP: ${{ steps.state.outputs.keep }}
+        run: |
+          end=$(( $(date +%s) + 5 * 3600 ))
+          while [ "$(date +%s)" -lt "$end" ]; do
+            # gfs_build.py: 0 built, 3 nothing new, anything else failed. A
+            # failure (or a build killed by the 45 min timeout, exit 124/137) is
+            # retried on the next pass, so it must not end the loop. A failed
+            # build may leave a partial site-gfs: only exit 0 publishes it.
+            set +e
+            timeout -k 10 2700 python gfs_build.py --out site-gfs --state state --live-manifest "$GFS_BASE/manifest.json"
+            rc=$?
+            set -e
+            if [ "$rc" = "0" ]; then
+              # A failed publish is retried by the next pass (the live manifest
+              # still names the old run), so it too must not end the loop, and
+              # the state is pushed only after a publish that worked.
+              if (cd publish && node blob.mjs ../site-gfs); then
+                if [ "$STATE_KEEP" != "1" ]; then
+                  (
+                    cd state || exit 1
+                    rm -rf .git
+                    git init -b state-gfs -q
+                    git -c user.name=pipeline -c user.email=pipeline@users.noreply.github.com add -A
+                    git -c user.name=pipeline -c user.email=pipeline@users.noreply.github.com commit -q -m "state $(date -u +%Y%m%dT%H%MZ)"
+                    git push --force "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" state-gfs
+                  ) || echo "state push failed, will retry"
+                fi
+              else
+                echo "publish failed, will retry"
+              fi
+              rm -rf site-gfs
+            elif [ "$rc" != "3" ]; then
+              echo "gfs_build.py failed (exit $rc), retrying next pass"
+              rm -rf site-gfs
+            fi
+            sleep 600
+          done
+      - name: start the next run
+        # Not after a broken setup step (pip, pytest, npm, node --test): that
+        # would restart a failing run at once; the 4-hourly cron restarts it.
+        if: always() && steps.loop.conclusion != 'skipped'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run gfs.yml --ref main

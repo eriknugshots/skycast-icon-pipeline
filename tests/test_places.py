@@ -113,6 +113,13 @@ def test_alternates(tmp_path):
     assert rows_of(out, m, "koeln")
 
 
+def test_alternates_sharing_a_key_keep_the_most_accented_spelling(tmp_path):
+    rows = [gn(1, "Munich", pop=1500000, cc="DE", adm="07", alts="Munchen,M\u00fcnchen")]
+    out, m = run(tmp_path, rows)
+    got = rows_of(out, m, "munchen")
+    assert len(got) == 1 and got[0][0] == "munchen" and got[0][1] == "M\u00fcnchen"
+
+
 def tile_files(out, m):
     return {f.name: f for f in (out / m["tiles"]).iterdir()}
 

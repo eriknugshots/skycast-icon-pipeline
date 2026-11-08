@@ -190,3 +190,20 @@ def test_main_exit_codes(tmp_path):
     assert aqm_build.main(["--out", str(tmp_path / "b")], read=ok, exists=lambda r: False) == 1
     assert aqm_build.main(["--out", str(tmp_path / "c")], read=lambda c: None, exists=lambda r: True) == 1
     assert not (tmp_path / "c" / "manifest.json").exists()
+
+
+def test_main_returns_3_when_the_live_manifest_already_names_the_run(tmp_path, monkeypatch):
+    class Everything(set):
+        def __contains__(self, item):
+            return True
+
+    iso = aqm_build.run_iso(ab.newest_complete_run(lambda r: True, aqm_build._now()))
+    monkeypatch.setattr(aqm_build, "_http_text", lambda url: json.dumps({"run": iso}))
+    out = tmp_path / "out"
+    rc = aqm_build.main(["--out", str(out), "--live-manifest", "https://x/manifest.json"],
+                        read=fake_read(Everything()), exists=lambda r: True)
+    assert rc == 3
+    assert not out.exists()           # nothing built
+    monkeypatch.setattr(aqm_build, "_http_text", lambda url: json.dumps({"run": "1999-01-01T00:00:00Z"}))
+    assert aqm_build.main(["--out", str(out), "--live-manifest", "https://x/manifest.json"],
+                          read=fake_read(Everything()), exists=lambda r: True) == 0

@@ -119,6 +119,11 @@ def rank_of(feature, population, kind):
     return "%0*d" % (RANK_W, RANK_BASE - (score * 4 + kind))
 
 
+def _rank_alt(alt, k):
+    """Lower wins: a spelling that is the key itself, then pure ASCII, then any."""
+    return 0 if alt.lower() == k else 1 if alt.isascii() else 2
+
+
 def place_rows(name, alternates, tail, feature, population, ascii_name=""):
     """Yield (key, rank, line-without-rank) for one place. `tail` is the
     tab-joined lat..timezone columns after the name."""
@@ -131,14 +136,13 @@ def place_rows(name, alternates, tail, feature, population, ascii_name=""):
         seen.add(pk)
         yield pk, rank_of(feature, population, 3), f"{pk}\t{shown}\t{tail}\t"
     if alternates:
-        # spellings sharing one key collapse to one row: the first pure-ASCII
-        # spelling wins ("Malta" over "M\u00e1lta"), else the first spelling
+        # spellings sharing one key collapse to one row: the spelling equal to the key wins ("Malta" over "Mal'ta"), then pure ASCII, else the first
         best = {}
         for alt in alternates.split(","):
             alt = _clean(alt)
             k = norm(alt) if alt else ""
             if k and k not in seen:
-                if k not in best or (not best[k].isascii() and alt.isascii()):
+                if k not in best or _rank_alt(alt, k) < _rank_alt(best[k], k):
                     best[k] = alt
         for k, alt in best.items():
             seen.add(k)

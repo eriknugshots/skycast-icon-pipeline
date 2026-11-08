@@ -29,11 +29,12 @@ const MANIFEST_S = 60;            // Blob's shortest cache time
 const CONCURRENCY = 16;           // Pro allows 75 uploads/s; leave room for retries
 const ATTEMPTS = 4;
 
-async function walk(dir) {
-  const out = [];
+// One shared array, never push(...walk(p)): a spread of a whole folder's files
+// overflows the stack at about 125,000 (the place index has 130,000).
+async function walk(dir, out = []) {
   for (const e of await readdir(dir, { withFileTypes: true })) {
     const p = join(dir, e.name);
-    if (e.isDirectory()) out.push(...await walk(p));
+    if (e.isDirectory()) await walk(p, out);
     else if (e.isFile()) out.push(p);
   }
   return out;
@@ -60,7 +61,7 @@ async function listAll() {
   let cursor;
   do {
     const r = await retry('list', () => list({ cursor, limit: 1000 }));
-    blobs.push(...r.blobs);
+    for (const b of r.blobs) blobs.push(b);
     cursor = r.hasMore ? r.cursor : undefined;
   } while (cursor);
   return blobs;

@@ -22,7 +22,7 @@ env:
 jobs:
   gfs:
     runs-on: ubuntu-24.04   # pinned: "latest" moves to a new Ubuntu under the build
-    timeout-minutes: 330
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -80,7 +80,7 @@ jobs:
               if (cd publish && node blob.mjs ../site-gfs); then
                 if [ "$STATE_KEEP" != "1" ]; then
                   (
-                    cd state
+                    cd state || exit 1
                     rm -rf .git
                     git init -b state-gfs -q
                     git -c user.name=pipeline -c user.email=pipeline@users.noreply.github.com add -A

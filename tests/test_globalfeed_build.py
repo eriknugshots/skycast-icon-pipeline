@@ -147,3 +147,19 @@ def test_cli_failure_is_1(tmp_path):
     rc = cli.main(_small(GFS, range(0, 2), (3,)), ["--out", str(tmp_path), "--state", str(tmp_path)],
                   now=NOW, exists=lambda u: True, get=boom, sleep=lambda s: None)
     assert rc == 1
+
+
+def test_failed_step_cancels_queued_steps(small, tmp_path):
+    m = dataclasses.replace(_small(GFS, range(0, 40), (40,)), workers=1)
+    fetched = []
+
+    def get(url, rng=None):
+        fetched.append(url)
+        if url == m.index_url(RUN, 1):
+            raise OSError("boom")
+        return b""
+
+    with pytest.raises(OSError):
+        gb.build(m, RUN, tmp_path, get, NOW, tmp_path / "state", sleep=lambda s: None)
+    assert m.index_url(RUN, 1) in fetched
+    assert len(fetched) < len(m.main_steps) // 2   # the queued steps never ran

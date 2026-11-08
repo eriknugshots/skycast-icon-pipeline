@@ -72,11 +72,20 @@ def _hours(model, run, steps, get, sleep, names, keep=()):
         return fh, _cut(world, names), (world if fh in keep else None)
 
     out = []
-    with cf.ThreadPoolExecutor(max_workers=max(1, model.workers)) as ex:
-        for fh, cut, world in ex.map(one, steps):
+    ex = cf.ThreadPoolExecutor(max_workers=max(1, model.workers))
+    try:
+        futures = [ex.submit(one, fh) for fh in steps]
+        for fut in futures:
+            fh, cut, world = fut.result()
             out.append(cut)
             if world is not None:
                 kept[fh] = world
+    except BaseException:
+        # One failed step fails the build: drop the queued steps instead of
+        # downloading every remaining hour inside the workflow's timeout.
+        ex.shutdown(wait=True, cancel_futures=True)
+        raise
+    ex.shutdown(wait=True)
     return out, kept
 
 

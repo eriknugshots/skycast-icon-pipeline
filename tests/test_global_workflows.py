@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-BUILD_RCS = [3, 0, 1, 0]   # 0 = built, 3 = nothing to do, else the build failed
+BUILD_RCS = [3, 0, 1, 124, 0, 137]   # 0 = built, 3 = nothing to do, else the build failed
 FEEDS = {
     "gfs": dict(other="aifs", step="watch GFS, build each new run", base="GFS_BASE",
                 secret="GFS_BLOB_READ_WRITE_TOKEN", branch="state-gfs"),
@@ -68,9 +68,10 @@ def run_loop(tmp_path, feed, fail_first_publish=False, keep_state=""):
     _stub(bin_ / "python", textwrap.dedent(f"""\
         if [ "$1" = "{feed}_build.py" ]; then
           shift; echo "$*" > "$T/build_args"
+          [ -d site-{feed} ] && echo stale >> "$T/stale"   # left over from an earlier pass
           n=$(cat "$T/n"); echo $((n + 1)) > "$T/n"
           rc=$(sed -n "$((n + 1))p" "$T/rcs"); rc=${{rc:-3}}
-          if [ "$rc" = "0" ]; then mkdir -p site-{feed}; fi
+          if [ "$rc" != "3" ]; then mkdir -p site-{feed}; fi   # a failed build may leave a partial dir
           echo "build $rc" >> "$T/events"; exit "$rc"
         fi
         exit 99
@@ -119,6 +120,7 @@ def test_loop_publishes_and_pushes_state_only_on_built(tmp_path, feed):
     assert FEEDS[feed]["branch"] in (tmp_path / "git_push").read_text().splitlines()[0]
     assert "--force" in (tmp_path / "git_push").read_text().splitlines()[0]
     assert not (tmp_path / f"site-{feed}").exists()
+    assert not (tmp_path / "stale").exists()   # every non-published pass cleaned its out dir
 
 
 @pytest.mark.parametrize("feed", ["gfs", "aifs"])
@@ -128,6 +130,7 @@ def test_failed_publish_does_not_push_state_or_end_loop(tmp_path, feed):
     assert _events(tmp_path) == expected_events(fail_first_publish=True)
     assert "publish failed, will retry" in p.stdout
     assert not (tmp_path / f"site-{feed}").exists()
+    assert not (tmp_path / "stale").exists()
 
 
 @pytest.mark.parametrize("feed", ["gfs", "aifs"])
@@ -149,6 +152,8 @@ def test_workflow_text_pins(feed):
     assert "secrets.BLOB_READ_WRITE_TOKEN" not in text
     assert "HRRR" not in text and "hrrr" not in text
     assert f["other"].upper() not in text and f["other"] not in text
+    assert "timeout-minutes: 360" in text
+    assert "cd state || exit 1" in text
     assert f["branch"] in text
     assert f"timeout -k 10 2700 python {feed}_build.py" in text
     assert f'--live-manifest "${f["base"]}/manifest.json"' in text

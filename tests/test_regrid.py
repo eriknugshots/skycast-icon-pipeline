@@ -7,7 +7,7 @@ import netCDF4
 import pytest
 from pipeline.squares import NX, NY
 from pipeline.regrid import remap_command, world_from_netcdf, KIT_URL, KIT_DIR
-from pipeline.regrid import LatticeRemap, copy_command, lattice_levels, levels_from_netcdf
+from pipeline.regrid import LatticeRemap, copy_command, lattice_levels, levels_from_netcdf, lattice_nearest
 from pipeline.regrid import world_values_from_netcdf, regrid_values
 
 
@@ -163,6 +163,59 @@ def test_lattice_remap_sums_the_weights_at_the_lattice_points_only(tmp_path):
         r.apply(cells[:4])
     with pytest.raises(ValueError):
         LatticeRemap(p, stride, nx=nx + 1, ny=ny)     # weights for another target
+
+
+def test_ww_is_regridded_nearest_not_blended(tmp_path):
+    # WW is a WMO 4677 code: two cells reading 3 (overcast) and 61 (light
+    # rain), weighted 0.4 and 0.6, are 61 — never a blend like 37.7 (a code
+    # of its own) and never their weighted sum.
+    assert lattice_nearest(np.array([[3.0, 61.0]]), np.array([[0.4, 0.6]]))[0] == 61.0
+    assert lattice_nearest(np.array([[61.0, 3.0]]), np.array([[0.4, 0.6]]))[0] == 3.0
+    assert np.isnan(lattice_nearest(np.array([[3.0, np.nan]]), np.array([[0.4, 0.6]]))[0])
+    assert lattice_nearest(np.array([[3.0, 61.0]]), np.array([[0.5, 0.5]]))[0] == 3.0     # tie: the first link
+    # The same on the lattice, through DWD's weights.
+    nx, ny, stride = 5, 3, 2
+    links = [(0, 0, 0, 0.4), (0, 0, 1, 0.6),          # lattice (0, 0): cells 0 and 1
+             (2, 4, 1, 0.7), (2, 4, 0, 0.3),          # lattice (1, 2): heaviest link listed first
+             (2, 2, 2, 0.9), (2, 2, 0, 0.1),          # lattice (1, 1): its heaviest source is missing
+             (0, 1, 0, 1.0)]                          # off the lattice
+    p = tmp_path / "w.nc"
+    _write_weights(p, nx, ny, links, src_size=3, num_wgts=3)
+    r = LatticeRemap(p, stride, nx=nx, ny=ny)
+    out = r.apply_nearest(np.array([3.0, 61.0, np.nan], dtype=np.float32))
+    assert out.dtype == np.float32 and out.shape == (2, 3)
+    assert out[0, 0] == 61.0 and out[1, 2] == 61.0
+    assert np.isnan(out[1, 1])
+    assert np.isnan(out[0, 1]) and np.isnan(out[0, 2]) and np.isnan(out[1, 0])   # no link
+    assert r.apply(np.array([3.0, 61.0, 0.0], dtype=np.float32))[0, 0] == pytest.approx(37.8)  # what blending would give
+    # apply_nearest IS lattice_nearest over each point's links: one rule.
+    import pipeline.regrid as regrid_mod
+    seen = []
+    real = regrid_mod.lattice_nearest
+    def spy(v, w):
+        seen.append(1)
+        return real(v, w)
+    regrid_mod.lattice_nearest = spy
+    try:
+        r.apply_nearest(np.array([3.0, 61.0, 0.0], dtype=np.float32))
+    finally:
+        regrid_mod.lattice_nearest = real
+    assert seen
+
+
+def test_lattice_levels_nearest_uses_the_largest_weight(tmp_path):
+    links = [(0, 0, 0, 0.4), (0, 0, 1, 0.6)]
+    w = tmp_path / "w.nc"
+    _write_weights(w, 1, 1, links, src_size=2)
+    remap = LatticeRemap(w, 1, nx=1, ny=1)
+    g = tmp_path / "WW.grib2.bz2"
+    g.write_bytes(bz2.compress(b"grib"))
+
+    def fake_cdo(cmd, check):
+        _cells_nc(cmd[-1], np.array([3.0, 61.0], np.float32))
+    assert lattice_levels([g], "/kit", tmp_path, 1, run=fake_cdo, remap=remap)[None][0, 0] == pytest.approx(37.8)
+    g.write_bytes(bz2.compress(b"grib"))
+    assert lattice_levels([g], "/kit", tmp_path, 1, run=fake_cdo, remap=remap, nearest=True)[None][0, 0] == 61.0
 
 
 def _cells_nc(path, values, levels=None):

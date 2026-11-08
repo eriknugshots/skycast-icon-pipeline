@@ -467,15 +467,24 @@ def _column_value(name):
         return int(m.group(1)), HSURF_M + HHL_AGL[int(m.group(1))]
     if "_HSURF." in name:
         return None, HSURF_M
-    m = re.search(r"_single-level_\d{10}_(\d{3})_(T_2M|RELHUM_2M)\.", name)
+    m = re.search(r"_single-level_\d{10}_(\d{3})_(T_2M|RELHUM_2M|WW)\.", name)
     step = int(m.group(1))
+    if m.group(2) == "WW":
+        return None, _ww_code(step)
     return 2, {"T_2M": 283.15 + step, "RELHUM_2M": 91.0}[m.group(2)]
 
 
-def _fake_lattice_levels(paths, kit, work, stride):
+def _ww_code(step):
+    """A WMO 4677 code per step: 45 fog, 61 rain, 71 snow, 95 thunder, ..."""
+    return float([45, 61, 71, 95, 3, 51][step % 6])
+
+
+def _fake_lattice_levels(paths, kit, work, stride, nearest=False):
     shape = columns.lattice(np.zeros((NY, NX), np.uint8), stride).shape
     out = {}
     for p in paths:
+        # WW is categorical: it must be fetched nearest-link, every other field blended.
+        assert nearest == ("_WW." in Path(p).name), (Path(p).name, nearest)
         lv, v = _column_value(Path(p).name)
         out[lv] = np.full(shape, v, dtype=np.float32)
     return out
@@ -538,7 +547,15 @@ def test_a_build_publishes_the_columns_in_app_units(tmp_path):
             assert _value(d, columns.GH, P, lv, s=s) == pytest.approx(8000 - 7 * lv, abs=TOL_1)
         assert _value(d, columns.T, H, 2, s=s) == pytest.approx(283.15 + s - 273.15, abs=TOL_T)
         assert _value(d, columns.RH, H, 2, s=s) == pytest.approx(91.0, abs=TOL_1)
+        assert _value(d, columns.WW, H, 0, s=s) == _ww_code(s)            # the code itself, unchanged
     assert _value(d, columns.HSURF, STATIC, 0) == pytest.approx(HSURF_M, abs=TOL_1)
+
+
+def test_ww_codes_outside_0_99_are_missing_never_clipped():
+    # 99 is "thunderstorm with heavy hail": garbage must never decode as severe weather.
+    arr = np.array([0.0, 3.2, 61.0, 99.0, 99.4, 99.6, 100.0, 255.0, -0.6, -1.0, np.nan, np.inf])
+    got = run_build._to_codes(("WW", None), arr)
+    assert got.tolist() == [0, 3, 61, 99, 99, 65535, 65535, 65535, 65535, 65535, 65535, 65535]
 
 
 def test_t80_is_interpolated_in_height_between_the_two_levels_around_80_m(tmp_path):
@@ -610,10 +627,10 @@ def test_a_column_failure_never_fails_the_build(tmp_path, capsys):
     steps = [0, 1]
     deps, _ = _deps_with_columns(tmp_path, steps)
 
-    def broken(paths, kit, work, stride):
+    def broken(paths, kit, work, stride, nearest=False):
         if any("RELHUM_2M" in Path(p).name for p in paths):
             raise OSError("cdo died")
-        return _fake_lattice_levels(paths, kit, work, stride)
+        return _fake_lattice_levels(paths, kit, work, stride, nearest=nearest)
     assert _columns_build(tmp_path, deps._replace(lattice_levels=broken), steps) == run_build.BUILT
     m = json.loads((tmp_path / "blob" / "manifest.json").read_text())
     assert m["columns"] is None
@@ -658,6 +675,39 @@ def test_column_history_comes_from_state(tmp_path):
         # History hour s is the first run's step s: T_2M = 283.15 + s K.
         for s in range(6):
             assert _value(d, columns.T, columns.HEIGHT_AGL_M, 2, s=s) == pytest.approx(283.15 + s - 273.15, abs=TOL_T)
+    finally:
+        RUN = first
+
+
+def test_column_history_saved_before_ww_is_padded_with_missing(tmp_path):
+    # A run head saved before WW joined the feed holds every dynamic field but
+    # the last (WW). The next build still uses those six hours, WW missing.
+    steps = list(range(6))
+    deps, _ = _deps_with_columns(tmp_path, steps)
+    _columns_build(tmp_path, deps, steps)
+    for p in (tmp_path / "state" / "columns").glob("2026092700.h*.npz"):
+        with np.load(p) as z:
+            head, rh = z["head"], z["run_hour"]
+        assert head.shape[1] == len(run_build.column_keys())
+        with np.load(p) as z:                                         # new heads name their fields
+            assert list(z["fields"]) == run_build.column_field_names()
+        np.savez_compressed(p, head=head[:, :-1], run_hour=rh)       # the pre-WW layout (no field list)
+    global RUN
+    first, RUN = RUN, RUN + dt.timedelta(hours=6)
+    try:
+        deps, _ = _deps_with_columns(tmp_path, [0, 1])
+        blob2 = tmp_path / "blob2"
+        run_build.build(site=tmp_path / "site2", state=tmp_path / "state", work=tmp_path / "work", deps=deps,
+                        pages_base="https://x", steps=[0, 1], squares=["N40W125"], workers=2, blob=blob2)
+        m = json.loads((blob2 / "manifest.json").read_text())
+        assert m["columns"]["historySteps"] == 6
+        d = decode_columns((blob2 / m["columns"]["tiles"] / "N40W125.icc").read_bytes())
+        H = columns.HEIGHT_AGL_M
+        for s in range(6):
+            assert _value(d, columns.T, H, 2, s=s) == pytest.approx(283.15 + s - 273.15, abs=TOL_T)
+            assert np.isnan(_value(d, columns.WW, H, 0, s=s))
+        for s in range(2):                                            # this run's own steps carry WW
+            assert _value(d, columns.WW, H, 0, s=6 + s) == _ww_code(s)
     finally:
         RUN = first
 

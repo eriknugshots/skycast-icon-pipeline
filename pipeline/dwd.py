@@ -96,7 +96,11 @@ def missing_thick_files(listing, run, steps):
 # 600 ... 30 — no 975), so the column carries seven levels.
 COLUMN_PLEVELS = [1000, 950, 925, 900, 850, 800, 700]
 COLUMN_PFIELDS = ["T", "RELHUM", "FI"]              # per pressure level
-COLUMN_SFIELDS = ["T_2M", "RELHUM_2M"]              # single level, per step
+COLUMN_SFIELDS = ["T_2M", "RELHUM_2M", "WW"]        # single level, per step
+# WW is ICON's present weather, a WMO 4677 code (0-3 cloud states, 45/48 fog,
+# 51-57 drizzle, 61-67 rain, 71-77 snow, 80-86 showers, 95/96 thunder); DWD
+# publishes it under grib/<HH>/ww/ at the same steps as T_2M (listing checked
+# 2026-11-07). It is categorical: remapped nearest-link, never blended.
 # No 80 m field exists in ICON open data; T at 80 m above ground is
 # interpolated in height between the two of these model levels (full levels;
 # 120 is the lowest) that bracket 80 m at each node, with the time-invariant

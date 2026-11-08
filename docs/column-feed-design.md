@@ -32,6 +32,7 @@ DWD ICON global open data (listing of `grib/00/*` checked 2026-10-02 by the
 | relative_humidity_2m | `single-level_…_RELHUM_2M` | 2 m | yes |
 | **temperature_80m** | **no 80 m field in ICON open data** | — | interpolated (below) |
 | elevation | `time-invariant_…_HSURF` | surface | yes |
+| weather code (fog, rain, snow, thunder) | `single-level_…_WW` (dir `ww`) | surface | yes (2026-11-07), nearest-neighbour |
 | (for T 80 m) | `model-level_…_<lev>_T` (dir `t`), levels 1–120 | 117, 118, 119 | yes |
 | (for T 80 m) | `time-invariant_…_<lev>_HHL` (dir `hhl`), half levels 1–121 | 117–120 | yes |
 | (not used) | `single-level_…_T_G` (ground temperature) | surface | no: a skin temperature, not air at 80 m |
@@ -122,7 +123,8 @@ whether a layer is shown at all. Each halving of the spacing cuts the
 steep-ground p95 by about a quarter; 0.25° is the finest the build can
 hold: 0.125° would be ~4× the bytes (~6 GB a run) and ~30 GB of memory for
 153 hours on a 16 GB runner (0.25°: ~8 GB). What 0.25° costs instead of
-0.5°: 1.59 GB a run on Blob instead of 0.50 GB, a median square of 669 KB
+0.5° (measured at F = 25, before WW; WW adds about 1/25 to each figure):
+1.59 GB a run on Blob instead of 0.50 GB, a median square of 669 KB
 instead of 202 KB for the phone (once per run per place), 117 s of
 encoding instead of 39 s, and a 94 MB history head per run in `state`
 (stored as six ~16 MB files, one per hour, to stay well under GitHub's
@@ -200,14 +202,15 @@ All integers little-endian.
 Field table:
 
 - kind: 1 = temperature (°C), 2 = relative humidity (%), 3 = geopotential
-  height (m above sea level), 4 = model surface height HSURF (m above sea level).
+  height (m above sea level), 4 = model surface height HSURF (m above sea level),
+  5 = present weather WW (a WMO 4677 code, 0–99; added 2026-11-07).
 - levelType: 0 = static (one value per node, no time axis), 1 = pressure
   (level in hPa), 2 = height above the model surface (level in m).
 - value = offset + scale × code (scale and offset as stored, f32);
   **code 65535 = missing** (NaN in DWD's field, or a NaN after remapping).
   Codes are clamped to 0…65534.
 
-Today's table (F = 25), in body order:
+Today's table (F = 26), in body order:
 
 | # | kind | levelType | level | scale | offset |
 |---|---|---|---|---|---|
@@ -215,9 +218,22 @@ Today's table (F = 25), in body order:
 | 21 | 1 (T) | 2 | 2 | 0.1 | −150 |
 | 22 | 2 (RH) | 2 | 2 | 1 | 0 |
 | 23 | 1 (T) | 2 | 80 | 0.1 | −150 |
-| 24 | 4 (HSURF) | 0 | 0 | 1 | −1000 |
+| 24 | 5 (WW) | 2 | 0 | 1 | 0 |
+| 25 | 4 (HSURF) | 0 | 0 | 1 | −1000 |
 
-A decoder must read the table, not assume this order.
+A decoder must read the table, not assume this order. New dynamic fields are
+appended after the last dynamic one (before the static HSURF), so a saved
+history head (state/columns/) holds a PREFIX of today's fields:
+`history.load_history_steps(…, pad=65535)` reads such a head with the new
+fields missing instead of dropping its six hours.
+
+**WW.** ICON's `ww` is the WMO 4677 present-weather subset ICON emits: 0–3
+cloud states, 45/48 fog, 51–57 drizzle, 61–67 rain, 71–77 snow, 80–86
+showers, 95/96 thunder. It is CATEGORICAL — a weighted sum of 3 and 61 is
+37.8, a code of its own — so it is remapped nearest-neighbour: each node
+takes the source cell of its heaviest DWD weight link (`LatticeRemap.
+apply_nearest`, `regrid.lattice_nearest`), NaN if that cell is missing, and
+the code is stored whole (rounded, clipped to 0…99; missing = 65535).
 
 Body: `zlib` (the browser's `DecompressionStream('deflate')`, as for ICL1) of
 `2·N` bytes, N = Σ over fields of rows·cols·(S, or 1 if static). The first N
@@ -254,7 +270,9 @@ codes, so most deltas are small and the high-byte plane is nearly all 0x00 or
 ## Size
 
 Measured on the 2026-10-02 00Z run (`columns-measure`, GitHub runner), every
-square on the globe (2592), F = 25 fields. "+60 h history" is what a full
+square on the globe (2592), F = 25 fields — before WW joined (2026-11-07,
+F = 26); WW adds about 1/25 to every size below, likely less after zlib, as
+a code that rarely changes hour to hour compresses well. "+60 h history" is what a full
 build publishes once the history has filled (153 hours: 60 history + 93
 own; the measurement replays the run's own hours 0–59 as stand-in history):
 
@@ -269,11 +287,13 @@ own; the measurement replays the run's own hours 0–59 as stand-in history):
 
 Where the bytes go (N40W125, 153 hours, 0.25°): T on the 7 pressure levels
 243 KB, RH 223 KB, GH 187 KB, T 2 m 41 KB, RH 2 m 35 KB, T 80 m 37 KB,
-HSURF 0.7 KB — the pressure levels are 85 % of a file.
+HSURF 0.7 KB — the pressure levels are 85 % of a file (pre-WW; WW not yet
+measured).
 
 A size bound computed from the format (header + zlib's `compressBound` of
-the 2·N-byte body, N = nodes · (24 · hours + 1)) is in
-`tests/test_columns.py`; at 0.25° and 153 hours it is 3.24 MB a square,
+the 2·N-byte body, N = nodes · (dynamic fields · hours + 1)) is in
+`tests/test_columns.py`; at 0.25°, 153 hours and the pre-WW 24 dynamic
+fields it is 3.24 MB a square,
 and the measured files are 21 % (median) to 26 % (largest) of it.
 
 Blob: prune keeps the current and the previous run, so the store holds
@@ -294,7 +314,8 @@ first), into `blob/`, and published by the existing Blob step
 2. HSURF and HHL 117–120 (once per run) → surface height and the T80 weights.
 3. Per step, in the build's worker pool: T, RELHUM and FI each as one cdo
    call over all seven levels (the GRIB files are concatenated), T_2M,
-   RELHUM_2M, and model-level T 117, 118 and 119 → T80. Each field is quantised
+   RELHUM_2M, WW (nearest link, not summed), and model-level T 117, 118
+   and 119 → T80. Each field is quantised
    at once, so memory is the lattice, not the 0.125° grid.
 
 **Remap straight onto the nodes.** The cloud squares remap with

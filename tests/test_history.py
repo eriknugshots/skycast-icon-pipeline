@@ -67,6 +67,49 @@ def test_the_column_history_is_its_own_u16_store_beside_the_clouds(tmp_path):
     assert run_file(tmp_path, R(27, 0)).exists()
 
 
+def test_an_older_head_with_fewer_trailing_fields_is_padded_not_skipped(tmp_path):
+    # A head saved before WW joined the column feed holds a PREFIX of today's
+    # dynamic fields (WW is appended last). It is read, the new field all
+    # missing, the others unchanged — split heads (one file an hour) included.
+    old = np.arange(6 * 3 * 2 * 4, dtype=np.uint16).reshape(6, 3, 2, 4)
+    save_run_head(tmp_path, R(27, 0), old, sub="columns", dtype=np.uint16, split=True)
+    got = load_history_steps(tmp_path, R(27, 6), sub="columns", shape=(4, 2, 4), pad=65535)
+    assert [h for h, _ in got] == [hour_of(R(27, 0)) + i for i in range(6)]
+    for i, (_, a) in enumerate(got):
+        assert a.shape == (4, 2, 4) and a.dtype == np.uint16
+        assert np.array_equal(a[:3], old[i])
+        assert (a[3] == 65535).all()
+    # Without `pad` it is another layout, skipped as before; a head with MORE
+    # fields, or another lattice, is never padded.
+    assert load_history_steps(tmp_path, R(27, 6), sub="columns", shape=(4, 2, 4)) == []
+    assert load_history_steps(tmp_path, R(27, 6), sub="columns", shape=(2, 2, 4), pad=65535) == []
+    assert load_history_steps(tmp_path, R(27, 6), sub="columns", shape=(4, 3, 4), pad=65535) == []
+    # A head of today's field count reads unchanged with `pad` given.
+    assert len(load_history_steps(tmp_path, R(27, 6), sub="columns", shape=(3, 2, 4), pad=65535)) == 6
+
+
+def test_a_head_that_stores_its_fields_is_padded_only_when_they_are_a_strict_prefix(tmp_path):
+    old = np.arange(6 * 3 * 2 * 4, dtype=np.uint16).reshape(6, 3, 2, 4)
+    fields = ["T@1000", "T_2M", "T_80M"]
+    save_run_head(tmp_path, R(27, 0), old, sub="columns", dtype=np.uint16, split=True, fields=fields)
+    load = lambda want, shape: load_history_steps(tmp_path, R(27, 6), sub="columns", shape=shape,
+                                                  pad=65535, fields=want)
+    # The saved fields are a strict prefix of today's: padded, the new field missing.
+    got = load(fields + ["WW"], (4, 2, 4))
+    assert len(got) == 6 and all(np.array_equal(a[:3], old[i]) and (a[3] == 65535).all()
+                                 for i, (_, a) in enumerate(got))
+    # The same fields: read as they are.
+    assert len(load(fields, (3, 2, 4))) == 6
+    # Same count, another order or field; or a longer list whose start differs: skipped.
+    assert load(["T_2M", "T@1000", "T_80M"], (3, 2, 4)) == []
+    assert load(["T@1000", "WW", "T_2M", "T_80M"], (4, 2, 4)) == []
+    assert load(["RH@1000", "T_2M", "T_80M", "WW"], (4, 2, 4)) == []
+    # A head saved with no field list (every head in state before this) keeps
+    # the count rule: fewer fields on the same lattice → padded.
+    save_run_head(tmp_path, R(27, 0), old, sub="columns", dtype=np.uint16, split=True)
+    assert len(load(["RH@1000", "T_2M", "T_80M", "WW"], (4, 2, 4))) == 6
+
+
 def test_a_split_head_is_one_file_per_hour_and_reads_and_prunes_like_one(tmp_path):
     from pipeline.history import prune, run_files, HEAD_STEPS
     cols = np.arange(6 * 2 * 3 * 5, dtype=np.uint16).reshape(6, 2, 3, 5)

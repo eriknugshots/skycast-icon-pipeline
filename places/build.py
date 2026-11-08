@@ -368,11 +368,12 @@ def build(zip_path, out_dir, admin1_text, countries_text, now=None,
     w = _Writer(tiles, max_shard_bytes, top_n, tmp)
     w.finish("", [], root, [])
     shutil.rmtree(tmp, ignore_errors=True)
-    run_ms = int((time.time() - t0) * 1000)
+    duration_ms = int((time.time() - t0) * 1000)
+    built_ms = int(now.timestamp() * 1000)     # runMs and builtMs: epoch ms, like every feed
     manifest = {
         "version": version,
-        "runMs": run_ms,
-        "builtMs": int(time.time() * 1000),
+        "runMs": built_ms,
+        "builtMs": built_ms,
         "complete": True,
         "tiles": f"tiles/{version}",
         "index": f"tiles/{version}/index.json",
@@ -383,7 +384,7 @@ def build(zip_path, out_dir, admin1_text, countries_text, now=None,
     (tiles / "index.json").write_text(json.dumps(
         {"split": sorted(w.split), "exact": sorted(w.exact)}, ensure_ascii=False, separators=(",", ":")))
     (out / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, separators=(",", ":")))
-    manifest["_stats"] = {"short": short, "empty_name": empty_name, "split": len(w.split), "exact": len(w.exact), "places": places, "skipped": skipped, "files": w.files,
+    manifest["_stats"] = {"duration_ms": duration_ms, "short": short, "empty_name": empty_name, "split": len(w.split), "exact": len(w.exact), "places": places, "skipped": skipped, "files": w.files,
                           "bytes": w.bytes, "biggest": w.biggest,
                           "eq_files": w.eq_files, "eq_biggest": w.eq_biggest,
                           "oversize": sorted(w.oversize, reverse=True)[:10]}

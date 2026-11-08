@@ -240,6 +240,8 @@ def test_manifest(tmp_path):
     assert idx(out, disk) == {"split": [], "exact": []}
     assert disk["attribution"] == "Places: GeoNames (CC BY 4.0)"
     assert isinstance(disk["runMs"], int) and isinstance(disk["builtMs"], int)
+    assert abs(disk["runMs"] - NOW.timestamp() * 1000) < 86_400_000   # an epoch time, not a duration
+    assert disk["runMs"] == disk["builtMs"]
     assert rows_of(out, disk, "bend")[0][:2] == ["bend", "Bend"]
 
 

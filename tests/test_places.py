@@ -52,7 +52,7 @@ def rows_of(out, m, key):
 
 def test_norm_vectors():
     vectors = json.loads((Path(__file__).parent / "fixtures/place_norm_vectors.json").read_text())
-    assert len(vectors) == 10
+    assert len(vectors) == 15
     for raw, want in vectors:
         assert norm(raw) == want, raw
 
@@ -371,3 +371,41 @@ def test_main_success_path_exits_0_and_writes_index(tmp_path, monkeypatch):
         fetch=lambda url: ADMIN1 if "admin1" in url else COUNTRIES, now=lambda: NOW)
     assert code == 0
     assert (site / "tiles/20261108/index.json").exists() and (site / "manifest.json").exists()
+
+
+def test_short_rows_are_counted_logged_and_refused_over_a_tenth_of_a_percent(tmp_path):
+    good = [gn(i, "Place%04d" % i) for i in range(2000)]
+    logs = []
+    z = make_zip(tmp_path, good + ["123\tShort\tonly"])
+    pb.build(z, tmp_path / "ok", ADMIN1, COUNTRIES, NOW, tmp_dir=tmp_path / "w1",
+             min_rows=1, log=logs.append)
+    assert any("1 short rows" in l for l in logs)          # 1 in 2001 is under 0.1%
+    z2 = tmp_path / "b" 
+    z2.mkdir()
+    bad = make_zip(z2, good[:100] + ["1\tx", "2\ty"])         # 2 in 102
+    with pytest.raises(pb.BuildRefused):
+        pb.build(bad, tmp_path / "bad", ADMIN1, COUNTRIES, NOW, tmp_dir=tmp_path / "w2",
+                 min_rows=1, log=lambda *_: None)
+    assert not (tmp_path / "bad" / "manifest.json").exists()
+
+
+def test_a_name_with_no_letters_falls_back_to_asciiname(tmp_path):
+    row = gn(1, "(?)", pop=5).split("\t")
+    row[2] = "Real Name"
+    out, m = run(tmp_path, ["\t".join(row), gn(2, "***", alts="Altname")])
+    got = rows_of(out, m, "realname")
+    assert got and got[0][1] == "(?)" and got[0][8] == "5"
+    assert rows_of(out, m, "altname")                      # alternates still serve a nameless row
+
+
+def test_keys_past_the_split_depth_are_found_by_the_query_path(tmp_path):
+    base = "a" * 40
+    rows = [gn(i, base + "%03d" % i, pop=i) for i in range(1, 60)]
+    out, m = run(tmp_path, rows, max_shard_bytes=1500, top_n=10)
+    split = set(idx(out, m)["split"])
+    assert "a" * 30 in split
+    for i in range(1, 60):
+        key = norm(base + "%03d" % i)
+        f = out / m["tiles"] / pb.shard_for(key, split)
+        assert f.exists(), key
+        assert any(l.split("\t")[0] == key for l in f.read_text().splitlines()), key

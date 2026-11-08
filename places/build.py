@@ -116,12 +116,14 @@ def rank_of(feature, population, kind):
     return "%0*d" % (RANK_W, RANK_BASE - (score * 4 + kind))
 
 
-def place_rows(name, alternates, tail, feature, population):
+def place_rows(name, alternates, tail, feature, population, ascii_name=""):
     """Yield (key, rank, line-without-rank) for one place. `tail` is the
     tab-joined lat..timezone columns after the name."""
     seen = set()
     shown = _clean(name)
     pk = norm(name)
+    if not pk and ascii_name:          # a name with no letters or digits: try asciiname
+        pk = norm(ascii_name)
     if pk:
         seen.add(pk)
         yield pk, rank_of(feature, population, 3), f"{pk}\t{shown}\t{tail}"
@@ -245,7 +247,7 @@ class _Writer:
         n = len(prefix)
         ext = _can_extend(prefix)
         child = Buckets(self.tmp / ("c" + _stem(prefix)))
-        top, exact = [], []
+        top, exact, longer = [], [], []
         keep = self.top_n * 8
         with open(path, "rb") as f:
             for line in f:
@@ -256,13 +258,15 @@ class _Writer:
                     top = heapq.nsmallest(self.top_n, top)
                 if ext and len(key) > n:
                     child.add_raw(key[: n + 1], line + b"\n")
+                elif len(key) > n:
+                    longer.append(line)    # cannot extend: the ~ file holds it
                 else:
                     exact.append(line)
         path.unlink()
         child.flush()
-        self.finish(prefix, exact, child, top)
+        self.finish(prefix, exact, child, top, longer)
 
-    def finish(self, prefix, exact, child, top):
+    def finish(self, prefix, exact, child, top, longer=()):
         sizes = child.size
         remaining = sum(sizes.values())
         splitc = []
@@ -271,7 +275,7 @@ class _Writer:
                 break
             splitc.append(c)
             remaining -= sizes[c]
-        rest = []
+        rest = list(longer)
         for c in sizes:
             if c not in splitc:
                 cp = child.path(c)
@@ -312,13 +316,15 @@ def build(zip_path, out_dir, admin1_text, countries_text, now=None,
     if tmp.exists():
         shutil.rmtree(tmp)
     root = Buckets(tmp / "root")
-    places = skipped = 0
+    places = skipped = short = empty_name = 0
     with zipfile.ZipFile(zip_path) as z:
         name = next(n for n in z.namelist() if n.endswith(".txt") and "readme" not in n.lower())
         with z.open(name) as raw:
             for line in io.TextIOWrapper(raw, encoding="utf-8", errors="replace", newline="\n"):
                 p = line.rstrip("\n").split("\t")
                 if len(p) < 18:
+                    if line.strip():
+                        short += 1
                     continue
                 places += 1
                 feature = p[7]
@@ -334,7 +340,9 @@ def build(zip_path, out_dir, admin1_text, countries_text, now=None,
                                   _clean(admin1.get(f"{cc}.{p[10]}", "")) if p[10] else "",
                                   str(pop) if p[14] else "", elev, p[17]))
                 made = False
-                for key, rank, row in place_rows(p[1], p[3], tail, feature, pop):
+                if not norm(p[1]):
+                    empty_name += 1
+                for key, rank, row in place_rows(p[1], p[3], tail, feature, pop, p[2]):
                     root.add(key[0], rank, row)
                     made = True
                 if not made:
@@ -342,7 +350,11 @@ def build(zip_path, out_dir, admin1_text, countries_text, now=None,
                 if places % 2_000_000 == 0:
                     log(f"  {places:,} places read ({time.time() - t0:.0f}s)")
     root.flush()
-    log(f"read {places:,} places; {skipped:,} had no searchable name")
+    log(f"read {places:,} places; {short:,} short rows (under 18 columns) dropped; "
+        f"{empty_name:,} had a name with no letters or digits; {skipped:,} had no searchable name at all")
+    if short > 0.001 * (places + short):
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise BuildRefused(f"{short} malformed rows of {places + short} (over 0.1%)")
     if places < min_rows:
         shutil.rmtree(tmp, ignore_errors=True)
         raise BuildRefused(f"only {places} places in the dump (need {min_rows})")
@@ -368,7 +380,7 @@ def build(zip_path, out_dir, admin1_text, countries_text, now=None,
     (tiles / "index.json").write_text(json.dumps(
         {"split": sorted(w.split), "exact": sorted(w.exact)}, ensure_ascii=False, separators=(",", ":")))
     (out / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, separators=(",", ":")))
-    manifest["_stats"] = {"split": len(w.split), "exact": len(w.exact), "places": places, "skipped": skipped, "files": w.files,
+    manifest["_stats"] = {"short": short, "empty_name": empty_name, "split": len(w.split), "exact": len(w.exact), "places": places, "skipped": skipped, "files": w.files,
                           "bytes": w.bytes, "biggest": w.biggest,
                           "eq_files": w.eq_files, "eq_biggest": w.eq_biggest,
                           "oversize": sorted(w.oversize, reverse=True)[:10]}

@@ -21,6 +21,10 @@ def norm(s):
     hit = _CACHE.get(s)
     if hit is not None:
         return hit
+    # NFKD splits letters from their accents; the final filter keeps only
+    # categories L* and N*, which is the step that drops EVERY combining mark
+    # (Mn, Mc, Me: accents and Indic vowel signs alike). The JS copy does the
+    # same with /[\p{L}\p{N}]/u after normalize("NFKD"); no separate mark strip.
     t = unicodedata.normalize("NFKD", s.lower().translate(_MAP))
     out = "".join(c for c in t if unicodedata.category(c)[0] in "LN")
     if len(_CACHE) >= _CACHE_MAX:

@@ -40,12 +40,14 @@ jobs:
         run: |
           # places_build.py: 0 built, 3 index is recent (success, nothing to
           # publish), anything else failed (the live index stays, this run goes red).
+          df -h .
           extra=""
           if [ "$FORCE" = "true" ]; then extra="--force"; fi
           set +e
           timeout -k 10 9000 python places_build.py --out site-places --live-manifest "$PLACES_BASE/manifest.json" $extra
           rc=$?
           set -e
+          df -h .
           if [ "$rc" = "0" ]; then
             (cd publish && node blob.mjs ../site-places)
           elif [ "$rc" = "3" ]; then

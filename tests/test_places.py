@@ -154,13 +154,34 @@ def test_oversize_sibling_group_forces_the_largest_out(tmp_path):
     assert len(rows_of(out, m, "d0000")) == 1 and len(rows_of(out, m, "a0059")) == 1
 
 
+def test_exact_rows_beyond_the_top_file_live_in_the_equals_file(tmp_path):
+    rows = [gn(i, "Creek", pop=i) for i in range(1, 251)]            # 250 places named Creek
+    rows += [gn(1000 + i, "Creekside%03d" % i, pop=10_000_000 + i) for i in range(300)]  # bigger, longer keys
+    out, m = run(tmp_path, rows, max_shard_bytes=4000, top_n=20)
+    files = tile_files(out, m)
+    assert m["exact"] == ["creek"]
+    assert pb.exact_file_for("creek", set(m["exact"])) == "creek=.tsv"
+    assert pb.exact_file_for("creeks", set(m["exact"])) is None
+    eq = [l.split("\t") for l in files["creek=.tsv"].read_text().splitlines()]
+    assert len(eq) == 250 and all(c[0] == "creek" for c in eq)
+    assert eq[-1][8] == "1"                                            # the bottom-ranked row is there
+    top = [l.split("\t") for l in files["creek.tsv"].read_text().splitlines()]
+    assert len(top) == 20
+    assert sum(1 for c in top if c[0] == "creek") == 10                # exact rows are present though outranked
+    assert "creek" not in {l.split("\t")[0] for f in files if f.endswith("~.tsv")
+                           for l in files[f].read_text().splitlines()}
+
+
 def test_resolution_contract_every_key_finds_its_row(tmp_path):
     names = ["Santa Cruz", "San Diego", "San Francisco", "Santa Fe", "Sant Antoni", "Sandpoint",
             "Saint Paul", "Sa", "Sanaa", "Mount Bachelor", "東京", "京都", "Zzz", "Zürich"]
     rows = [gn(i, n, pop=i) for i, n in enumerate(names)]
     rows += [gn(100 + i, "San%03d" % i, pop=i) for i in range(150)]
-    out, m = run(tmp_path, rows, max_shard_bytes=2500, top_n=1000)
+    rows += [gn(500 + i, "Dupename", pop=i) for i in range(150)]     # more than 100 exact rows
+    out, m = run(tmp_path, rows, max_shard_bytes=2500, top_n=200)
     split = set(m["split"])
+    assert "dupename" in m["exact"]
+    assert len((out / m["tiles"] / "dupename=.tsv").read_text().splitlines()) == 150
     assert split
     seen = 0
     # rebuild the row list the way the build keyed it, then check each resolves
@@ -170,10 +191,17 @@ def test_resolution_contract_every_key_finds_its_row(tmp_path):
         for key, _rank, row in place_rows(p[1], p[3], "x", p[7], 0):
             if len(key) < 2:
                 continue
-            f = out / m["tiles"] / pb.shard_for(key, split)
-            assert f.exists(), (key, f.name)
-            assert any(l.split("\t")[0] == key and l.split("\t")[1] == row.split("\t")[1]
-                       for l in f.read_text().splitlines()), (key, f.name)
+            names = [pb.shard_for(key, split)]
+            eq = pb.exact_file_for(key, set(m["exact"]))
+            if eq:
+                names.append(eq)
+            found = False
+            for n in names:
+                f = out / m["tiles"] / n
+                if f.exists() and any(l.split("\t")[0] == key and l.split("\t")[1] == row.split("\t")[1]
+                                      for l in f.read_text().splitlines()):
+                    found = True
+            assert found, (key, names)
             seen += 1
     assert seen > 150
     # a rare first character lands in the root file
@@ -184,7 +212,8 @@ def test_unsplittable_key_may_exceed_the_cap(tmp_path):
     rows = [gn(i, "Same", pop=i) for i in range(1, 300)]
     out, m = run(tmp_path, rows, max_shard_bytes=2000, top_n=5)
     files = tile_files(out, m)
-    assert len(files["same~.tsv"].read_text().splitlines()) == 299   # over the cap, as allowed
+    assert "same" in m["exact"]
+    assert len(files["same=.tsv"].read_text().splitlines()) == 299   # every row, over the cap
     assert len(files["same.tsv"].read_text().splitlines()) == 5      # the top N
 
 

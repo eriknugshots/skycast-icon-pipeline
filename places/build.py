@@ -8,11 +8,17 @@
 #                                         best first
 # manifest = {version, runMs, builtMs, complete: true, tiles, split, attribution}.
 # `split` lists every key that has its own node (the root '' is always one and is
-# not listed). For a split key k: `key_file(k)~.tsv` (root: `~.tsv`) holds every row
-# of k's subtree except those under a child that is itself split; for k != ''
-# `key_file(k).tsv` holds the TOP_N best of k's whole subtree (plus its TOP_N best
-# rows whose key is exactly k). Children are split off largest first until what
-# remains fits MAX_SHARD_BYTES. Resolve a query key with shard_for().
+# not listed). For a split key k != '':
+#   key_file(k)~.tsv  rows whose key is LONGER than k and not under a split child
+#                     (root: ~.tsv); children are split off largest first until
+#                     this fits MAX_SHARD_BYTES. Omitted when empty (a missing
+#                     ~ file means no rows).
+#   key_file(k).tsv   the best TOP_N/2 rows whose key is exactly k, then the best
+#                     rows of k's whole subtree up to TOP_N in all, best first.
+#   key_file(k)=.tsv  EVERY row whose key is exactly k; written only when there
+#                     are more than TOP_N/2, and k is then listed in `exact`. May
+#                     exceed the cap; read only for comma-qualified queries.
+# Resolve a query key with shard_for(); exact_file_for() names the '=' file.
 #
 # Every GeoNames row is kept, of every class, at any population, in any script.
 # Each place yields: a row for its name; a row per alternate name (name shown =
@@ -179,6 +185,12 @@ def _can_extend(prefix):
     return len(prefix) < MAX_PREFIX and len(key_file(prefix)) < MAX_STEM
 
 
+def exact_file_for(key, exact):
+    """The '=' file holding EVERY row whose key is exactly `key`, or None when
+    the key has none (its top file already holds all of them)."""
+    return key_file(key) + "=.tsv" if key in exact else None
+
+
 def shard_for(key, split):
     """The file (name with .tsv) a reader opens for query key `key`; `split` is
     the manifest's set of split keys. Extend s while the next prefix of the key
@@ -199,16 +211,24 @@ class _Writer:
         self.top_n = top_n
         self.tmp = Path(tmp)
         self.split = []
+        self.exact = []        # split keys with an '=' file
+        self.eq_files = 0
+        self.eq_biggest = (0, "")
         self.files = 0
         self.bytes = 0
         self.biggest = (0, "")
         self.oversize = []     # (bytes, file stem) of files over max_shard
 
-    def emit(self, stem, lines):
+    def emit(self, stem, lines, big=False):
         data = b"".join(l[PREFIX_LEN:] + b"\n" for l in lines)
         (self.tiles / (stem + ".tsv")).write_bytes(data)
         self.files += 1
         self.bytes += len(data)
+        if big:                 # '=' files may exceed the cap
+            self.eq_files += 1
+            if len(data) > self.eq_biggest[0]:
+                self.eq_biggest = (len(data), stem)
+            return
         if len(data) > self.biggest[0]:
             self.biggest = (len(data), stem)
         if len(data) > self.max_shard:
@@ -239,25 +259,34 @@ class _Writer:
 
     def finish(self, prefix, exact, child, top):
         sizes = child.size
-        remaining = sum(len(l) - PREFIX_LEN + 1 for l in exact) + sum(sizes.values())
+        remaining = sum(sizes.values())
         splitc = []
         for c in sorted(sizes, key=lambda c: (-sizes[c], c)):
             if remaining <= self.max_shard:
                 break
             splitc.append(c)
             remaining -= sizes[c]
-        rest = list(exact)
+        rest = []
         for c in sizes:
             if c not in splitc:
                 cp = child.path(c)
                 rest.extend(cp.read_bytes().split(b"\n")[:-1])
                 cp.unlink()
         rest.sort()
-        self.emit(key_file(prefix) + "~", rest)
+        if rest or not prefix:
+            self.emit(key_file(prefix) + "~", rest)
         if prefix:
             self.split.append(prefix)
-            best = set(heapq.nsmallest(self.top_n, top)) | set(heapq.nsmallest(self.top_n, exact))
+            ex_top = self.top_n // 2
+            best = set(heapq.nsmallest(ex_top, exact))
+            for l in heapq.nsmallest(self.top_n, top):
+                if len(best) >= self.top_n:
+                    break
+                best.add(l)
             self.emit(key_file(prefix), sorted(best))
+            if len(exact) > ex_top:
+                self.exact.append(prefix)
+                self.emit(key_file(prefix) + "=", sorted(exact), big=True)
         for c in sorted(splitc):
             self.node(c, child.dir)
         shutil.rmtree(child.dir, ignore_errors=True)
@@ -327,10 +356,12 @@ def build(zip_path, out_dir, admin1_text, countries_text, now=None,
         "complete": True,
         "tiles": f"tiles/{version}",
         "split": sorted(w.split),
+        "exact": sorted(w.exact),
         "attribution": ATTRIBUTION,
     }
     (out / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, separators=(",", ":")))
     manifest["_stats"] = {"places": places, "skipped": skipped, "files": w.files,
                           "bytes": w.bytes, "biggest": w.biggest,
+                          "eq_files": w.eq_files, "eq_biggest": w.eq_biggest,
                           "oversize": sorted(w.oversize, reverse=True)[:10]}
     return manifest

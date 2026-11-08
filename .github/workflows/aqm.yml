@@ -1,0 +1,49 @@
+name: aqm
+# Air quality feed from NOAA's AQM (PM2.5 surface forecast). Hourly: one pass
+# checks whether NOAA has published a newer run than the live manifest and
+# builds it if so. No self-restarting chain (unlike hrrr.yml and tick.yml): a
+# missed hour costs nothing, the next hour's pass catches the run up.
+# Publishes to its own Vercel Blob store (AQ_BASE), never the ICON or HRRR one.
+on:
+  schedule:
+    - cron: "41 * * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: aqm
+  cancel-in-progress: false
+env:
+  AQ_BASE: https://u6zo6dgnfgsj7bwo.public.blob.vercel-storage.com   # public URL, not a secret
+jobs:
+  aqm:
+    runs-on: ubuntu-24.04   # pinned: "latest" moves to a new Ubuntu under the build
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r requirements.txt
+      - run: python -m pytest -q
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - run: cd publish && npm ci --no-audit --no-fund && node --test
+      - name: build the newest AQM run if the live site lacks it
+        env:
+          PYTHONUNBUFFERED: "1"
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.AQ_BLOB_READ_WRITE_TOKEN }}
+        run: |
+          # aqm_build.py: 0 built, 3 nothing new (success, nothing to publish),
+          # anything else failed (the live site stays and this run goes red).
+          set +e
+          timeout -k 10 2400 python aqm_build.py --out site-aqm --live-manifest "$AQ_BASE/manifest.json"
+          rc=$?
+          set -e
+          if [ "$rc" = "0" ]; then
+            (cd publish && node blob.mjs ../site-aqm)
+          elif [ "$rc" = "3" ]; then
+            echo "live site already carries the newest AQM run"
+          else
+            echo "aqm_build.py failed (exit $rc)"
+            exit "$rc"
+          fi

@@ -178,7 +178,7 @@ def regrid_levels(gribs_bz2, kit, work, run=subprocess.run):
 # ---- Straight to the column lattice -----------------------------------------
 #
 # The column feed needs every `stride`-th point of the 0.125° grid, 25 fields
-# a step. Remapping all 4.1 M points per level with cdo and then dropping
+# a step (26 since WW, 2026-11-07; the timings below were measured at 25). Remapping all 4.1 M points per level with cdo and then dropping
 # 15/16 of them is what made the first measured column build take most of an
 # hour and a half. Instead cdo only decodes the GRIB (`copy`: ICON's own
 # cells, no remap), and DWD's SAME weights, cut to the lattice's points, are
@@ -232,18 +232,26 @@ class LatticeRemap:
     def apply_nearest(self, cells):
         """For a CATEGORICAL field (WW): at each point the source of its
         heaviest link, never a blend — float32 [ly][lx], NaN where that
-        source is missing or the point has no link. See lattice_nearest."""
+        source is missing or the point has no link. The rule is
+        lattice_nearest's, over each point's links laid out as rows."""
         cells = self._cells(cells)
-        n = self.ly * self.lx
-        if not hasattr(self, "_heaviest"):
-            # Links sorted by point, heaviest first (ties: the first listed).
-            order = np.lexsort((np.arange(self.w.size), -self.w, self.node))
-            first = np.ones(order.size, dtype=bool)
-            first[1:] = self.node[order][1:] != self.node[order][:-1]
-            self._heaviest = (self.node[order][first], self.src[order][first])
-        node, src = self._heaviest
-        out = np.full(n, np.nan)
-        out[node] = cells[src].astype(np.float64)
+        if not hasattr(self, "_rows"):
+            # [points][max links] source indices and weights, links in their
+            # listed order (a stable sort), padded with weight −inf.
+            n = self.ly * self.lx
+            order = np.argsort(self.node, kind="stable")
+            node = self.node[order]
+            count = np.bincount(node, minlength=n)
+            k = max(1, int(count.max()) if count.size else 1)
+            start = np.concatenate(([0], np.cumsum(count)[:-1]))
+            slot = np.arange(node.size) - start[node]
+            src = np.zeros((n, k), dtype=np.int64)
+            w = np.full((n, k), -np.inf)
+            src[node, slot], w[node, slot] = self.src[order], self.w[order]
+            self._rows = (src, w)
+        src, w = self._rows
+        out = lattice_nearest(cells[src], w)
+        out[self.empty] = np.nan
         return out.astype(np.float32).reshape(self.ly, self.lx)
 
     def apply(self, cells):

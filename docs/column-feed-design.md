@@ -123,7 +123,8 @@ whether a layer is shown at all. Each halving of the spacing cuts the
 steep-ground p95 by about a quarter; 0.25° is the finest the build can
 hold: 0.125° would be ~4× the bytes (~6 GB a run) and ~30 GB of memory for
 153 hours on a 16 GB runner (0.25°: ~8 GB). What 0.25° costs instead of
-0.5°: 1.59 GB a run on Blob instead of 0.50 GB, a median square of 669 KB
+0.5° (measured at F = 25, before WW; WW adds about 1/25 to each figure):
+1.59 GB a run on Blob instead of 0.50 GB, a median square of 669 KB
 instead of 202 KB for the phone (once per run per place), 117 s of
 encoding instead of 39 s, and a 94 MB history head per run in `state`
 (stored as six ~16 MB files, one per hour, to stay well under GitHub's
@@ -269,7 +270,9 @@ codes, so most deltas are small and the high-byte plane is nearly all 0x00 or
 ## Size
 
 Measured on the 2026-10-02 00Z run (`columns-measure`, GitHub runner), every
-square on the globe (2592), F = 25 fields. "+60 h history" is what a full
+square on the globe (2592), F = 25 fields — before WW joined (2026-11-07,
+F = 26); WW adds about 1/25 to every size below, likely less after zlib, as
+a code that rarely changes hour to hour compresses well. "+60 h history" is what a full
 build publishes once the history has filled (153 hours: 60 history + 93
 own; the measurement replays the run's own hours 0–59 as stand-in history):
 
@@ -284,11 +287,13 @@ own; the measurement replays the run's own hours 0–59 as stand-in history):
 
 Where the bytes go (N40W125, 153 hours, 0.25°): T on the 7 pressure levels
 243 KB, RH 223 KB, GH 187 KB, T 2 m 41 KB, RH 2 m 35 KB, T 80 m 37 KB,
-HSURF 0.7 KB — the pressure levels are 85 % of a file.
+HSURF 0.7 KB — the pressure levels are 85 % of a file (pre-WW; WW not yet
+measured).
 
 A size bound computed from the format (header + zlib's `compressBound` of
-the 2·N-byte body, N = nodes · (24 · hours + 1)) is in
-`tests/test_columns.py`; at 0.25° and 153 hours it is 3.24 MB a square,
+the 2·N-byte body, N = nodes · (dynamic fields · hours + 1)) is in
+`tests/test_columns.py`; at 0.25°, 153 hours and the pre-WW 24 dynamic
+fields it is 3.24 MB a square,
 and the measured files are 21 % (median) to 26 % (largest) of it.
 
 Blob: prune keeps the current and the previous run, so the store holds

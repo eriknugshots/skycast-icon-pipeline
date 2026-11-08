@@ -439,6 +439,12 @@ def column_keys():
     return keys + [("T_2M", None), ("RELHUM_2M", None), ("T_80M", None), ("WW", None)]
 
 
+def column_field_names():
+    """column_keys as strings ("T@1000", "WW") — stored in each history head,
+    so a later build pads a head only when its fields are a prefix of today's."""
+    return [f if lv is None else f"{f}@{lv}" for f, lv in column_keys()]
+
+
 def column_spec():
     return columns.field_spec(dwd.COLUMN_PLEVELS)
 
@@ -452,8 +458,14 @@ def _to_codes(key, arr):
         return columns.quantize(arr, *columns._QUANT[columns.RH])
     if field == "FI":
         return columns.quantize(arr / G, *columns._QUANT[columns.GH])
-    if field == "WW":                    # a WMO 4677 code: whole, 0..99, NaN → missing
-        return columns.quantize(np.clip(np.rint(arr), 0, 99), *columns._QUANT[columns.WW])
+    if field == "WW":
+        # A WMO 4677 code, whole. Anything outside 0..99 is MISSING, never
+        # clipped: 99 is "thunderstorm with heavy hail", and garbage must
+        # never decode as severe weather.
+        with np.errstate(invalid="ignore"):
+            c = np.rint(np.asarray(arr, dtype=np.float64))
+            c[~((c >= 0) & (c <= 99))] = np.nan
+        return columns.quantize(c, *columns._QUANT[columns.WW])
     raise KeyError(field)
 
 
@@ -646,7 +658,7 @@ def build_columns(blob_dir, state, work, deps, kit, run, steps, names, workers, 
         # pad: a head saved before a field was appended (WW, 2026-11-07) is
         # still six good hours, the new field missing.
         past = history.load_history_steps(state, run, sub="columns", shape=own[0][1].shape,
-                                          pad=columns.MISSING)
+                                          pad=columns.MISSING, fields=column_field_names())
         stacks = past + own
         hours = [h for h, _ in stacks]
         base = history.hour_of(run)
@@ -654,7 +666,7 @@ def build_columns(blob_dir, state, work, deps, kit, run, steps, names, workers, 
         if len(head_steps) == history.HEAD_STEPS:
             by_hour = dict(own)
             history.save_run_head(state, run, np.stack([by_hour[base + s] for s in head_steps]),
-                                  sub="columns", dtype=np.uint16, split=True)
+                                  sub="columns", dtype=np.uint16, split=True, fields=column_field_names())
             history.prune(state, dwd.run_id(run), sub="columns")
         total = write_columns(blob_dir, run, names, stride, static, stacks, workers)
     except Exception as e:

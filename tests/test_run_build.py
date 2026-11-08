@@ -551,6 +551,13 @@ def test_a_build_publishes_the_columns_in_app_units(tmp_path):
     assert _value(d, columns.HSURF, STATIC, 0) == pytest.approx(HSURF_M, abs=TOL_1)
 
 
+def test_ww_codes_outside_0_99_are_missing_never_clipped():
+    # 99 is "thunderstorm with heavy hail": garbage must never decode as severe weather.
+    arr = np.array([0.0, 3.2, 61.0, 99.0, 99.4, 99.6, 100.0, 255.0, -0.6, -1.0, np.nan, np.inf])
+    got = run_build._to_codes(("WW", None), arr)
+    assert got.tolist() == [0, 3, 61, 99, 99, 65535, 65535, 65535, 65535, 65535, 65535, 65535]
+
+
 def test_t80_is_interpolated_in_height_between_the_two_levels_around_80_m(tmp_path):
     steps = [0, 1]
     deps, _ = _deps_with_columns(tmp_path, steps)
@@ -682,7 +689,9 @@ def test_column_history_saved_before_ww_is_padded_with_missing(tmp_path):
         with np.load(p) as z:
             head, rh = z["head"], z["run_hour"]
         assert head.shape[1] == len(run_build.column_keys())
-        np.savez_compressed(p, head=head[:, :-1], run_hour=rh)       # the pre-WW layout
+        with np.load(p) as z:                                         # new heads name their fields
+            assert list(z["fields"]) == run_build.column_field_names()
+        np.savez_compressed(p, head=head[:, :-1], run_hour=rh)       # the pre-WW layout (no field list)
     global RUN
     first, RUN = RUN, RUN + dt.timedelta(hours=6)
     try:

@@ -172,6 +172,7 @@ def test_ww_is_regridded_nearest_not_blended(tmp_path):
     assert lattice_nearest(np.array([[3.0, 61.0]]), np.array([[0.4, 0.6]]))[0] == 61.0
     assert lattice_nearest(np.array([[61.0, 3.0]]), np.array([[0.4, 0.6]]))[0] == 3.0
     assert np.isnan(lattice_nearest(np.array([[3.0, np.nan]]), np.array([[0.4, 0.6]]))[0])
+    assert lattice_nearest(np.array([[3.0, 61.0]]), np.array([[0.5, 0.5]]))[0] == 3.0     # tie: the first link
     # The same on the lattice, through DWD's weights.
     nx, ny, stride = 5, 3, 2
     links = [(0, 0, 0, 0.4), (0, 0, 1, 0.6),          # lattice (0, 0): cells 0 and 1
@@ -187,6 +188,19 @@ def test_ww_is_regridded_nearest_not_blended(tmp_path):
     assert np.isnan(out[1, 1])
     assert np.isnan(out[0, 1]) and np.isnan(out[0, 2]) and np.isnan(out[1, 0])   # no link
     assert r.apply(np.array([3.0, 61.0, 0.0], dtype=np.float32))[0, 0] == pytest.approx(37.8)  # what blending would give
+    # apply_nearest IS lattice_nearest over each point's links: one rule.
+    import pipeline.regrid as regrid_mod
+    seen = []
+    real = regrid_mod.lattice_nearest
+    def spy(v, w):
+        seen.append(1)
+        return real(v, w)
+    regrid_mod.lattice_nearest = spy
+    try:
+        r.apply_nearest(np.array([3.0, 61.0, 0.0], dtype=np.float32))
+    finally:
+        regrid_mod.lattice_nearest = real
+    assert seen
 
 
 def test_lattice_levels_nearest_uses_the_largest_weight(tmp_path):

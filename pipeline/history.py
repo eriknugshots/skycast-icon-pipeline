@@ -42,22 +42,29 @@ def run_files(state, run, sub="history"):
     return sorted(d.glob(f"{run:%Y%m%d%H}.npz")) + sorted(d.glob(f"{run:%Y%m%d%H}.h*.npz"))
 
 
-def save_run_head(state, run, head, sub="history", dtype=np.uint8, split=False):
+def save_run_head(state, run, head, sub="history", dtype=np.uint8, split=False, fields=None):
     """head: [6][fields][rows][cols] — the run's hours 0-5. For the clouds
     uint8 [6][4][NY][NX], fields low/mid/high/total. split: one file per
     hour (<run>.h0.npz … h5) — the column head at 0.25° is ~94 MB in one
-    file, near GitHub's 100 MB limit on a pushed file; split, ~16 MB each."""
+    file, near GitHub's 100 MB limit on a pushed file; split, ~16 MB each.
+    fields: the names of head's field axis, stored beside it so a later
+    load pads it only when they are a prefix of the fields it wants."""
     if head.shape[0] != HEAD_STEPS:
         raise ValueError(f"head must hold {HEAD_STEPS} steps, got {head.shape[0]}")
+    extra = {}
+    if fields is not None:
+        if len(fields) != head.shape[1]:
+            raise ValueError(f"{len(fields)} field names for a head of {head.shape[1]} fields")
+        extra["fields"] = np.array([str(f) for f in fields])
     history_dir(state, sub).mkdir(parents=True, exist_ok=True)
     for old in run_files(state, run, sub):
         old.unlink()
     if not split:
-        np.savez_compressed(run_file(state, run, sub), head=head.astype(dtype), run_hour=hour_of(run))
+        np.savez_compressed(run_file(state, run, sub), head=head.astype(dtype), run_hour=hour_of(run), **extra)
         return
     for i in range(HEAD_STEPS):
         np.savez_compressed(history_dir(state, sub) / f"{run:%Y%m%d%H}.h{i}.npz",
-                            head=head[i:i + 1].astype(dtype), run_hour=hour_of(run) + i)
+                            head=head[i:i + 1].astype(dtype), run_hour=hour_of(run) + i, **extra)
 
 
 def runs_to_keep(run_ids, current_id):
@@ -77,11 +84,19 @@ def prune(state, current_id, sub="history"):
             p.unlink()
 
 
-def _fit(head, shape, pad):
+def _fit(head, shape, pad, saved=None, want=None):
     """head [k][fields..] → the same with `shape` per hour, or None. With
     `pad`, a head with FEWER fields on the same lattice (saved before a field
     was appended to the end of the list) gets the new trailing fields filled
-    with `pad`; anything else of another layout is None."""
+    with `pad`; anything else of another layout is None. When the head
+    stored its field names (`saved`) and the caller names today's (`want`),
+    the names decide: equal → as is, a STRICT prefix → padded, else None.
+    A head with no stored names (every head before 2026-11-07) falls back
+    to the count rule."""
+    if saved is not None and want is not None:
+        saved, want = [str(f) for f in saved], [str(f) for f in want]
+        if len(saved) != head.shape[1] or want[:len(saved)] != saved:
+            return None
     if shape is None or tuple(head.shape[1:]) == tuple(shape):
         return head
     shape = tuple(shape)
@@ -93,13 +108,14 @@ def _fit(head, shape, pad):
     return out
 
 
-def load_history_steps(state, run, sub="history", shape=None, pad=None):
+def load_history_steps(state, run, sub="history", shape=None, pad=None, fields=None):
     """[(unix_hour, uint8 [4][NY][NX]), ...] ascending, for hours in
     [run - HISTORY_HOURS, run). Later runs win where two runs share an hour
     (they never do at 6-hourly runs with 6-hour heads, but be safe).
     shape: the per-hour shape wanted; heads of another layout are skipped,
     except that with `pad` a head whose field axis is a shorter prefix is
-    padded (see _fit) — the column feed's fields are only ever appended."""
+    padded (see _fit) — the column feed's fields are only ever appended.
+    fields: today's field names, checked against a head's stored ones."""
     d = history_dir(state, sub)
     if not d.exists():
         return []
@@ -109,7 +125,8 @@ def load_history_steps(state, run, sub="history", shape=None, pad=None):
         with np.load(p) as z:
             base = int(z["run_hour"])
             head = z["head"]
-        head = _fit(head, shape, pad)
+            saved = list(z["fields"]) if "fields" in z.files else None
+        head = _fit(head, shape, pad, saved, fields)
         if head is None:
             continue                       # another layout (e.g. another column stride or field list)
         for i in range(head.shape[0]):

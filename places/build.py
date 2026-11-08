@@ -131,12 +131,18 @@ def place_rows(name, alternates, tail, feature, population, ascii_name=""):
         seen.add(pk)
         yield pk, rank_of(feature, population, 3), f"{pk}\t{shown}\t{tail}\t"
     if alternates:
+        # spellings sharing one key collapse to one row: the first pure-ASCII
+        # spelling wins ("Malta" over "M\u00e1lta"), else the first spelling
+        best = {}
         for alt in alternates.split(","):
             alt = _clean(alt)
             k = norm(alt) if alt else ""
             if k and k not in seen:
-                seen.add(k)
-                yield k, rank_of(feature, population, 2), f"{k}\t{alt}\t{tail}\t{shown}"
+                if k not in best or (not best[k].isascii() and alt.isascii()):
+                    best[k] = alt
+        for k, alt in best.items():
+            seen.add(k)
+            yield k, rank_of(feature, population, 2), f"{k}\t{alt}\t{tail}\t{shown}"
     words = [w for w in _WORDS.split(name) if w]
     if len(words) < 2:
         return

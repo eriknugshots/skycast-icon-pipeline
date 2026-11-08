@@ -1,5 +1,5 @@
 # places/normalize.py — the search key of a place name, and the file a key lives in.
-# The app keeps an identical norm() (JavaScript) and pins it with the same vectors
+# The app keeps an identical norm() (JavaScript, src/placesearch.js in the app repo) and pins it with the same vectors
 # file (tests/fixtures/place_norm_vectors.json). Change one, change both.
 import re
 import unicodedata

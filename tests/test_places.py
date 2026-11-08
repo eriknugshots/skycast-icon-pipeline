@@ -113,6 +113,13 @@ def test_alternates(tmp_path):
     assert rows_of(out, m, "koeln")
 
 
+def test_alternates_sharing_a_key_prefer_ascii(tmp_path):
+    rows = [gn(1, "Republic of Malta", pop=500000, cc="MT", adm="00", alts="M\u00e1lta,Malta")]
+    out, m = run(tmp_path, rows)
+    got = rows_of(out, m, "malta")
+    assert len(got) == 1 and got[0][0] == "malta" and got[0][1] == "Malta"
+
+
 def tile_files(out, m):
     return {f.name: f for f in (out / m["tiles"]).iterdir()}
 

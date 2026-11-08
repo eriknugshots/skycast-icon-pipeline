@@ -37,9 +37,13 @@ def run(tmp_path, rows, **kw):
     return out, m
 
 
+def idx(out, m):
+    return json.loads((out / m["tiles"] / "index.json").read_text())
+
+
 def rows_of(out, m, key):
     """What the app does: open shard_for's file, filter by prefix."""
-    f = out / m["tiles"] / pb.shard_for(key, set(m["split"]))
+    f = out / m["tiles"] / pb.shard_for(key, set(idx(out, m)["split"]))
     if not f.exists():
         return []
     cols = [l.split("\t") for l in f.read_text().splitlines()]
@@ -129,7 +133,7 @@ def test_small_siblings_share_one_tilde_file(tmp_path):
     rows += [gn(1000 + i, n, pop=1) for i, n in enumerate(["Qx", "Quad", "Ruby", "Rock", "Tango"])]
     out, m = run(tmp_path, rows, max_shard_bytes=4000, top_n=10)
     files = tile_files(out, m)
-    split = set(m["split"])
+    split = set(idx(out, m)["split"])
     assert "s" in split and "sp" in split
     assert not split & {"q", "r", "t"}
     root = files["~.tsv"].read_text().splitlines()
@@ -147,7 +151,7 @@ def test_oversize_sibling_group_forces_the_largest_out(tmp_path):
         rows += [gn(len(rows) + i, f"{ch}{i:04d}x{'y' * 20}", pop=i) for i in range(n)]
     out, m = run(tmp_path, rows, max_shard_bytes=6000, top_n=5)
     files = tile_files(out, m)
-    split = set(m["split"])
+    split = set(idx(out, m)["split"])
     assert "a" in split                    # the largest goes first
     assert "d" not in split and "e" not in split
     assert files["~.tsv"].stat().st_size <= 6000
@@ -159,9 +163,9 @@ def test_exact_rows_beyond_the_top_file_live_in_the_equals_file(tmp_path):
     rows += [gn(1000 + i, "Creekside%03d" % i, pop=10_000_000 + i) for i in range(300)]  # bigger, longer keys
     out, m = run(tmp_path, rows, max_shard_bytes=4000, top_n=20)
     files = tile_files(out, m)
-    assert m["exact"] == ["creek"]
-    assert pb.exact_file_for("creek", set(m["exact"])) == "creek=.tsv"
-    assert pb.exact_file_for("creeks", set(m["exact"])) is None
+    assert idx(out, m)["exact"] == ["creek"]
+    assert pb.exact_file_for("creek", set(idx(out, m)["exact"])) == "creek=.tsv"
+    assert pb.exact_file_for("creeks", set(idx(out, m)["exact"])) is None
     eq = [l.split("\t") for l in files["creek=.tsv"].read_text().splitlines()]
     assert len(eq) == 250 and all(c[0] == "creek" for c in eq)
     assert eq[-1][8] == "1"                                            # the bottom-ranked row is there
@@ -179,8 +183,8 @@ def test_resolution_contract_every_key_finds_its_row(tmp_path):
     rows += [gn(100 + i, "San%03d" % i, pop=i) for i in range(150)]
     rows += [gn(500 + i, "Dupename", pop=i) for i in range(150)]     # more than 100 exact rows
     out, m = run(tmp_path, rows, max_shard_bytes=2500, top_n=200)
-    split = set(m["split"])
-    assert "dupename" in m["exact"]
+    split = set(idx(out, m)["split"])
+    assert "dupename" in idx(out, m)["exact"]
     assert len((out / m["tiles"] / "dupename=.tsv").read_text().splitlines()) == 150
     assert split
     seen = 0
@@ -192,7 +196,7 @@ def test_resolution_contract_every_key_finds_its_row(tmp_path):
             if len(key) < 2:
                 continue
             names = [pb.shard_for(key, split)]
-            eq = pb.exact_file_for(key, set(m["exact"]))
+            eq = pb.exact_file_for(key, set(idx(out, m)["exact"]))
             if eq:
                 names.append(eq)
             found = False
@@ -212,7 +216,7 @@ def test_unsplittable_key_may_exceed_the_cap(tmp_path):
     rows = [gn(i, "Same", pop=i) for i in range(1, 300)]
     out, m = run(tmp_path, rows, max_shard_bytes=2000, top_n=5)
     files = tile_files(out, m)
-    assert "same" in m["exact"]
+    assert "same" in idx(out, m)["exact"]
     assert len(files["same=.tsv"].read_text().splitlines()) == 299   # every row, over the cap
     assert len(files["same.tsv"].read_text().splitlines()) == 5      # the top N
 
@@ -231,7 +235,9 @@ def test_manifest(tmp_path):
     out, m = run(tmp_path, [gn(1, "Bend")])
     disk = json.loads((out / "manifest.json").read_text())
     assert disk["version"] == "20261108" and disk["tiles"] == "tiles/20261108"
-    assert disk["complete"] is True and disk["split"] == []
+    assert disk["complete"] is True and "split" not in disk and "exact" not in disk
+    assert disk["index"] == "tiles/20261108/index.json"
+    assert idx(out, disk) == {"split": [], "exact": []}
     assert disk["attribution"] == "Places: GeoNames (CC BY 4.0)"
     assert isinstance(disk["runMs"], int) and isinstance(disk["builtMs"], int)
     assert rows_of(out, disk, "bend")[0][:2] == ["bend", "Bend"]
@@ -348,3 +354,20 @@ def test_workflow_text_pins():
     assert "https://tmqi4dwepzljptx1.public.blob.vercel-storage.com" in text
     assert "actions: write" not in text
     assert set(re.findall(r"secrets\.(\w+)", text)) == {"PLACES_BLOB_READ_WRITE_TOKEN"}
+
+
+def test_upload_fits_the_job_timeout():
+    text = WORKFLOW.read_text()
+    assert int(re.search(r"timeout-minutes: (\d+)", text).group(1)) >= 180
+
+
+def test_main_success_path_exits_0_and_writes_index(tmp_path, monkeypatch):
+    real = pb.build
+    monkeypatch.setattr(pb, "build", lambda *a, **k: real(*a, **{**k, "min_rows": 1}))
+    z = make_zip(tmp_path, [gn(1, "Bend")])
+    site = tmp_path / "site"
+    code = places_build.main(
+        ["--out", str(site), "--zip", str(z)],
+        fetch=lambda url: ADMIN1 if "admin1" in url else COUNTRIES, now=lambda: NOW)
+    assert code == 0
+    assert (site / "tiles/20261108/index.json").exists() and (site / "manifest.json").exists()

@@ -88,7 +88,7 @@ def main(argv=None, fetch=_http_text, download=_download, now=_now):
             shutil.rmtree(tmp, ignore_errors=True)
         s = m["_stats"]
         print(f"built {m['version']}: {s['places']:,} places, {s['files']:,} files, "
-              f"{s['bytes']:,} bytes, {len(m['split']):,} split keys, runMs {m['runMs']}")
+              f"{s['bytes']:,} bytes, {s['split']:,} split keys, {s['exact']:,} exact keys, runMs {m['runMs']}")
         print(f"biggest file: {s['biggest'][1]!r} {s['biggest'][0]:,} bytes; "
               f"over the cap: {s['oversize']}")
         return BUILT

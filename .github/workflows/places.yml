@@ -22,7 +22,7 @@ env:
 jobs:
   places:
     runs-on: ubuntu-24.04   # pinned: "latest" moves to a new Ubuntu under the build
-    timeout-minutes: 180
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

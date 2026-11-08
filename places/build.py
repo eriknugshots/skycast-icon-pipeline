@@ -6,7 +6,12 @@
 #                                         country_code, country, admin1,
 #                                         population, elevation, timezone;
 #                                         best first
-# manifest = {version, runMs, builtMs, complete: true, tiles, split, attribution}.
+# manifest = {version, runMs, builtMs, complete: true, tiles, index, attribution}.
+# The manifest names `index` (tiles/<version>/index.json = {split, exact}); the
+# lists below live there, not in manifest.json. The manifest is written last.
+# A 404 on a `~` file means that node has no longer-keyed rows (empty `~` files
+# are not written); the app relies on this and must treat it as an empty result.
+#
 # `split` lists every key that has its own node (the root '' is always one and is
 # not listed). For a split key k != '':
 #   key_file(k)~.tsv  rows whose key is LONGER than k and not under a split child
@@ -355,12 +360,15 @@ def build(zip_path, out_dir, admin1_text, countries_text, now=None,
         "builtMs": int(time.time() * 1000),
         "complete": True,
         "tiles": f"tiles/{version}",
-        "split": sorted(w.split),
-        "exact": sorted(w.exact),
+        "index": f"tiles/{version}/index.json",
         "attribution": ATTRIBUTION,
     }
+    # split and exact are 58,000 keys: too heavy for the manifest the admin check
+    # reads every 10 minutes, so they live in the run's own index.json
+    (tiles / "index.json").write_text(json.dumps(
+        {"split": sorted(w.split), "exact": sorted(w.exact)}, ensure_ascii=False, separators=(",", ":")))
     (out / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, separators=(",", ":")))
-    manifest["_stats"] = {"places": places, "skipped": skipped, "files": w.files,
+    manifest["_stats"] = {"split": len(w.split), "exact": len(w.exact), "places": places, "skipped": skipped, "files": w.files,
                           "bytes": w.bytes, "biggest": w.biggest,
                           "eq_files": w.eq_files, "eq_biggest": w.eq_biggest,
                           "oversize": sorted(w.oversize, reverse=True)[:10]}

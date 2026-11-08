@@ -409,3 +409,16 @@ def test_keys_past_the_split_depth_are_found_by_the_query_path(tmp_path):
         f = out / m["tiles"] / pb.shard_for(key, split)
         assert f.exists(), key
         assert any(l.split("\t")[0] == key for l in f.read_text().splitlines()), key
+
+
+def test_primary_column_marks_alternate_rows_only(tmp_path):
+    rows = [gn(1, "Bend", alts="Ben de zhi li,Bend")] + [gn(2, "Mount Bachelor", cls="T", code="MT")]
+    out, m = run(tmp_path, rows)
+    alt = rows_of(out, m, "bendezhili")
+    assert len(alt) == 1 and len(alt[0]) == 12
+    assert alt[0][1] == "Ben de zhi li" and alt[0][11] == "Bend"
+    own = rows_of(out, m, "bend")[0]
+    assert len(own) == 12 and own[1] == "Bend" and own[11] == ""
+    for key in ("mountbachelor", "mtbachelor", "bachelor"):    # name, alias, word rows
+        r = rows_of(out, m, key)[0]
+        assert len(r) == 12 and r[1] == "Mount Bachelor" and r[11] == "", key

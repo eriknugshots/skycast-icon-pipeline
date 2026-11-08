@@ -4,9 +4,12 @@
 #   manifest.json                         written LAST
 #   tiles/<version>/<file>.tsv            rows: key, name, lat, lon, feature,
 #                                         country_code, country, admin1,
-#                                         population, elevation, timezone;
+#                                         population, elevation, timezone, primary;
 #                                         best first
 # manifest = {version, runMs, builtMs, complete: true, tiles, index, attribution}.
+# Column 12, `primary`: blank on a row showing the place's own name (its name row,
+# an alias row, a word row); on an alternate-name row, the place's own GeoNames name.
+#
 # The manifest names `index` (tiles/<version>/index.json = {split, exact}); the
 # lists below live there, not in manifest.json. The manifest is written last.
 # A 404 on a `~` file means that node has no longer-keyed rows (empty `~` files
@@ -126,14 +129,14 @@ def place_rows(name, alternates, tail, feature, population, ascii_name=""):
         pk = norm(ascii_name)
     if pk:
         seen.add(pk)
-        yield pk, rank_of(feature, population, 3), f"{pk}\t{shown}\t{tail}"
+        yield pk, rank_of(feature, population, 3), f"{pk}\t{shown}\t{tail}\t"
     if alternates:
         for alt in alternates.split(","):
             alt = _clean(alt)
             k = norm(alt) if alt else ""
             if k and k not in seen:
                 seen.add(k)
-                yield k, rank_of(feature, population, 2), f"{k}\t{alt}\t{tail}"
+                yield k, rank_of(feature, population, 2), f"{k}\t{alt}\t{tail}\t{shown}"
     words = [w for w in _WORDS.split(name) if w]
     if len(words) < 2:
         return
@@ -142,12 +145,12 @@ def place_rows(name, alternates, tail, feature, population, ascii_name=""):
         k = ALIASES[first] + norm("".join(words[1:]))
         if k not in seen:
             seen.add(k)
-            yield k, rank_of(feature, population, 2), f"{k}\t{shown}\t{tail}"
+            yield k, rank_of(feature, population, 2), f"{k}\t{shown}\t{tail}\t"
     for w in words[1:]:
         k = norm(w)
         if len(k) >= 3 and k not in seen:
             seen.add(k)
-            yield k, rank_of(feature, population, 1), f"{k}\t{shown}\t{tail}"
+            yield k, rank_of(feature, population, 1), f"{k}\t{shown}\t{tail}\t"
 
 
 def _stem(prefix):

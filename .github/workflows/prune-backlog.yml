@@ -1,0 +1,59 @@
+name: prune-backlog
+# One-off cleanup of a feed store's old runs (publish/prune-backlog.mjs). From
+# Nov 1 every publish's delete phase hit Blob's rate limit and gave up, so the
+# stores kept every run. This keeps the run the LIVE manifest names, anything
+# newer (a build may be uploading) and the run before it, and deletes the rest,
+# paced as the publish paces it. Run by hand: Actions → prune-backlog → Run
+# workflow. dry_run (the default) prints files and bytes per folder and per run
+# and deletes nothing.
+on:
+  workflow_dispatch:
+    inputs:
+      store:
+        description: "which feed store (icon = build.yml's, gfs = gfs.yml's, aifs = aifs.yml's)"
+        type: choice
+        options: [icon, gfs, aifs]
+        default: icon
+      dry_run:
+        description: "only report what would be deleted"
+        type: boolean
+        default: true
+permissions:
+  contents: read
+concurrency:
+  group: prune-backlog-${{ inputs.store }}
+  cancel-in-progress: false
+jobs:
+  prune:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - run: cd publish && npm ci --no-audit --no-fund && node --test
+      - name: prune ${{ inputs.store }} (dry run ${{ inputs.dry_run }})
+        # Each store's token in its own variable, picked below: an `a && x || y`
+        # expression would fall through to the ICON token when the chosen
+        # store's secret is empty, and prune the wrong store.
+        env:
+          STORE: ${{ inputs.store }}
+          ICON_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+          GFS_TOKEN: ${{ secrets.GFS_BLOB_READ_WRITE_TOKEN }}
+          AIFS_TOKEN: ${{ secrets.AIFS_BLOB_READ_WRITE_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          case "$STORE" in
+            icon) BLOB_READ_WRITE_TOKEN="$ICON_TOKEN" ;;
+            gfs)  BLOB_READ_WRITE_TOKEN="$GFS_TOKEN" ;;
+            aifs) BLOB_READ_WRITE_TOKEN="$AIFS_TOKEN" ;;
+            *) echo "::error::unknown store $STORE"; exit 1 ;;
+          esac
+          if [ -z "$BLOB_READ_WRITE_TOKEN" ]; then echo "::error::the $STORE store's secret is not set"; exit 1; fi
+          export BLOB_READ_WRITE_TOKEN
+          unset ICON_TOKEN GFS_TOKEN AIFS_TOKEN
+          if [ "$DRY_RUN" = "true" ]; then
+            node publish/prune-backlog.mjs --dry-run
+          else
+            node publish/prune-backlog.mjs
+          fi

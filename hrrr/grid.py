@@ -39,3 +39,18 @@ def box_average(values, bins):
         m = np.where(n > 0, np.clip(np.rint(s / np.maximum(n, 1)), 0, 100), 255).astype(np.uint8)
         out[name] = m.reshape(SIDE, SIDE)
     return out
+
+
+def box_mean(values, bins):
+    """{square name: float64[SIDE][SIDE]}: the plain mean of the voters, in the
+    source's own units; NaN where no usable source cell falls (NaN source cells
+    do not vote). The thickness feed's counterpart of box_average."""
+    out = {}
+    for name, (idx, flat) in bins.items():
+        v = values[idx]
+        good = ~np.isnan(v)
+        s = np.bincount(flat[good], v[good], SIDE * SIDE)
+        n = np.bincount(flat[good], None, SIDE * SIDE)
+        m = np.where(n > 0, s / np.maximum(n, 1), np.nan)
+        out[name] = m.reshape(SIDE, SIDE)
+    return out

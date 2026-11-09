@@ -47,10 +47,22 @@ def _sleep(s):
     time.sleep(s)
 
 
+def parse_hours(text):
+    """"0,3,6-9" -> [0, 3, 6, 7, 8, 9]; None for None (every hour of the run)."""
+    if text is None:
+        return None
+    out = set()
+    for part in text.split(","):
+        lo, _, hi = part.strip().partition("-")
+        out.update(range(int(lo), int(hi or lo) + 1))
+    return sorted(out)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser()
     p.add_argument("--out", default="site-hrrr")
     p.add_argument("--live-manifest")
+    p.add_argument("--hours", help="only these forecast hours, e.g. 0,3,6-9 (a sample run; its manifest says complete: false)")
     a = p.parse_args(argv)
     try:
         now = _now()
@@ -67,7 +79,7 @@ def main(argv=None):
             if live == iso:
                 print(f"live site already carries {iso}")
                 return NOTHING_TO_DO
-        names = hb.build(run, a.out, _get, now, sleep=_sleep)
+        names = hb.build(run, a.out, _get, now, sleep=_sleep, fhs=parse_hours(a.hours))
         print(f"built {iso}: {len(names)} squares")
         return BUILT
     except Exception as e:

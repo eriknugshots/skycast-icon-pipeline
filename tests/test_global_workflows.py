@@ -1,4 +1,4 @@
-# The GFS and AIFS loops in .github/workflows/{gfs,aifs}.yml, run for real under
+# The GFS, AIFS and IFS loops in .github/workflows/{gfs,aifs,ifs}.yml, run for real under
 # bash with python, node, git, sleep and date stubbed (fake clock): a publish and
 # a state push follow a build that exited 0 (and a publish that worked) and
 # nothing else; every pass sleeps 600 s; the loop ends at 5 h.
@@ -18,7 +18,10 @@ FEEDS = {
                 secret="GFS_BLOB_READ_WRITE_TOKEN", branch="state-gfs"),
     "aifs": dict(other="gfs", step="watch AIFS, build each new run", base="AIFS_BASE",
                  secret="AIFS_BLOB_READ_WRITE_TOKEN", branch="state-aifs"),
+    "ifs": dict(other="gfs", step="watch IFS, build each new run", base="IFS_BASE",
+                secret="IFS_BLOB_READ_WRITE_TOKEN", branch="state-ifs"),
 }
+LOOPS = ["gfs", "aifs", "ifs"]
 
 
 def loop_script(feed):
@@ -109,7 +112,7 @@ def _events(tmp_path):
     return (tmp_path / "events").read_text().splitlines()
 
 
-@pytest.mark.parametrize("feed", ["gfs", "aifs"])
+@pytest.mark.parametrize("feed", LOOPS)
 def test_loop_publishes_and_pushes_state_only_on_built(tmp_path, feed):
     p = run_loop(tmp_path, feed)
     assert p.returncode == 0, p.stderr
@@ -123,7 +126,7 @@ def test_loop_publishes_and_pushes_state_only_on_built(tmp_path, feed):
     assert not (tmp_path / "stale").exists()   # every non-published pass cleaned its out dir
 
 
-@pytest.mark.parametrize("feed", ["gfs", "aifs"])
+@pytest.mark.parametrize("feed", LOOPS)
 def test_failed_publish_does_not_push_state_or_end_loop(tmp_path, feed):
     p = run_loop(tmp_path, feed, fail_first_publish=True)
     assert p.returncode == 0, p.stderr
@@ -133,7 +136,7 @@ def test_failed_publish_does_not_push_state_or_end_loop(tmp_path, feed):
     assert not (tmp_path / "stale").exists()
 
 
-@pytest.mark.parametrize("feed", ["gfs", "aifs"])
+@pytest.mark.parametrize("feed", LOOPS)
 def test_unfetchable_state_branch_is_never_overwritten(tmp_path, feed):
     p = run_loop(tmp_path, feed, keep_state="1")
     assert p.returncode == 0, p.stderr
@@ -158,5 +161,34 @@ def test_workflow_text_pins(feed):
     assert f"timeout -k 10 2700 python {feed}_build.py" in text
     assert f'--live-manifest "${f["base"]}/manifest.json"' in text
     assert f"gh workflow run {feed}.yml --ref main" in text
+    redispatch = text.split("name: start the next run")[1]
+    assert "steps.loop.conclusion != 'skipped'" in redispatch.split("run:")[0]
+
+
+def test_ifs_workflow_text_pins():
+    # ifs.yml is aifs.yml's shape, but manual-only until its store exists
+    text = (ROOT / ".github/workflows/ifs.yml").read_text()
+    assert "name: ifs\n" in text
+    on = text.split("\non:\n")[1].split("\npermissions:")[0]
+    assert on.strip() == "workflow_dispatch:"                 # no schedule until the store exists
+    assert "schedule:" not in text
+    assert "the schedule goes back" in text
+    assert "IFS_BASE: https://IFS-BLOB-STORE-ID.public.blob.vercel-storage.com" in text
+    assert "PLACEHOLDER" in text
+    assert "cancel-in-progress: false" in text
+    assert "actions: write" in text and "contents: write" in text
+    assert "secrets.IFS_BLOB_READ_WRITE_TOKEN" in text
+    assert "secrets.BLOB_READ_WRITE_TOKEN" not in text
+    assert "AIFS" not in text and "aifs" not in text            # copied from aifs.yml: no leftovers
+    assert "olm6m8kwhtgaegrx" not in text                       # never AIFS's live store
+    assert "HRRR" not in text and "hrrr" not in text
+    assert "GFS" not in text and "gfs" not in text
+    assert "timeout-minutes: 360" in text
+    assert "cd state || exit 1" in text
+    assert "state-ifs" in text
+    assert "timeout -k 10 2700 python ifs_build.py" in text
+    assert '--live-manifest "$IFS_BASE/manifest.json"' in text
+    assert "node blob.mjs ../site-ifs" in text
+    assert "gh workflow run ifs.yml --ref main" in text
     redispatch = text.split("name: start the next run")[1]
     assert "steps.loop.conclusion != 'skipped'" in redispatch.split("run:")[0]

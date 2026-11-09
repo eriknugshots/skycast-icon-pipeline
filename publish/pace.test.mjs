@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createRetry, paceDelay, filesToSend } from './pace.mjs';
+import { createRetry, paceDelay, filesToSend, rateLimitSeconds } from './pace.mjs';
 
 const clock = () => {
   let t = 1000;
@@ -52,4 +52,34 @@ test('a resumed publish sends only what is missing, and always the index', () =>
   const have = ['tiles/v/a.tsv', 'tiles/v/index.json', 'manifest.json'];
   assert.deepEqual(filesToSend(files, have, true).map((x) => x.path), ['tiles/v/b.tsv', 'tiles/v/index.json']);
   assert.deepEqual(filesToSend(files, have, false), files);
+});
+
+// Nov 2026: the delete phase's "Too many requests" came with retryAfter 0 (no
+// Retry-After header), was taken for an ordinary error, and failed every build.
+const bare429 = () => Object.assign(new Error('Vercel Blob: Too many requests please lower the number of concurrent requests .'), { retryAfter: 0 });
+test('a "Too many requests" without retryAfter is a rate limit: 60 s, no attempt used', async () => {
+  const c = clock();
+  const retry = createRetry({ attempts: 2, now: c.now, sleep: c.sleep });
+  let calls = 0;
+  const out = await retry('delete', async () => { calls += 1; if (calls <= 4) throw bare429(); return 'ok'; });
+  assert.equal(out, 'ok');
+  assert.equal(calls, 5);
+  assert.equal(c.at(), 1000 + 4 * 60000);
+});
+test('a bare rate limit that never lifts is still capped by maxRateWaits', async () => {
+  const c = clock();
+  const retry = createRetry({ now: c.now, sleep: c.sleep, maxRateWaits: 3 });
+  let calls = 0;
+  await assert.rejects(retry('delete', async () => { calls += 1; throw bare429(); }), /delete: still rate limited/);
+  assert.equal(calls, 4);
+});
+test('rate-limit seconds: retryAfter, then the message, then the fallback; 0 for anything else', () => {
+  assert.equal(rateLimitSeconds(limited(30)), 30);
+  assert.equal(rateLimitSeconds(new Error('Too many requests - try again in 12 seconds.')), 12);
+  assert.equal(rateLimitSeconds(bare429()), 60);
+  assert.equal(rateLimitSeconds(bare429(), 5), 5);
+  assert.equal(rateLimitSeconds(Object.assign(new Error('x'), { name: 'BlobServiceRateLimited' })), 60);
+  assert.equal(rateLimitSeconds(new Error('rate limit exceeded')), 60);
+  assert.equal(rateLimitSeconds(new Error('boom')), 0);
+  assert.equal(rateLimitSeconds(null), 0);
 });

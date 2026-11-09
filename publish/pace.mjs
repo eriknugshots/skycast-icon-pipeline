@@ -5,8 +5,26 @@
 // limit is not a failure: every worker waits out the time Blob named, and the
 // wait never uses up an attempt.
 
-/** Retry fn: rate limits wait as long as Blob says, shared by all workers; other errors use up `attempts`. */
-export function createRetry({ attempts = 4, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), now = () => Date.now(), maxRateWaits = 60 } = {}) {
+/**
+ * Seconds to wait for a rate-limit error, or 0 when it is not one. Blob's
+ * BlobServiceRateLimited carries retryAfter only when the answer had a
+ * Retry-After header; without one it is 0 and the message reads only "Too many
+ * requests please lower the number of concurrent requests" — the error every
+ * ICON build's delete phase ended on from Nov 1. That is still a rate limit:
+ * wait `fallbackS`.
+ */
+export function rateLimitSeconds(e, fallbackS = 60) {
+  const after = Number(e && e.retryAfter);
+  if (Number.isFinite(after) && after > 0) return after;
+  const msg = String((e && e.message) || e || '');
+  const named = /try again in (\d+) seconds/i.exec(msg);
+  if (named && Number(named[1]) > 0) return Number(named[1]);
+  if ((e && e.name === 'BlobServiceRateLimited') || /too many requests|rate limit/i.test(msg)) return fallbackS;
+  return 0;
+}
+
+/** Retry fn: rate limits wait as long as Blob says (else rateWaitS), shared by all workers; other errors use up `attempts`. */
+export function createRetry({ attempts = 4, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), now = () => Date.now(), maxRateWaits = 60, rateWaitS = 60 } = {}) {
   let resumeAt = 0;
   return async function retry(what, fn) {
     let tries = 0, rateWaits = 0;
@@ -14,8 +32,8 @@ export function createRetry({ attempts = 4, sleep = (ms) => new Promise((r) => s
       const wait = resumeAt - now();
       if (wait > 0) await sleep(wait);
       try { return await fn(); } catch (e) {
-        const after = Number(e && e.retryAfter);
-        if (Number.isFinite(after) && after > 0) {
+        const after = rateLimitSeconds(e, rateWaitS);
+        if (after > 0) {
           rateWaits += 1;
           if (rateWaits > maxRateWaits) throw new Error(`${what}: still rate limited: ${e.message || e}`);
           resumeAt = Math.max(resumeAt, now() + after * 1000);

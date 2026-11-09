@@ -7,9 +7,9 @@ name: ifs
 # Publishes to its own Vercel Blob store (IFS_BASE), never another feed's.
 # The build's history lives on the orphan branch state-ifs (fetched into state/
 # before the loop, force-pushed after each successful publish).
-# Until IFS_BASE and the IFS_BLOB_READ_WRITE_TOKEN secret exist, runs start only
-# by hand: the schedule goes back (cron "41 */4 * * *") when the store exists.
 on:
+  schedule:
+    - cron: "41 */4 * * *"
   workflow_dispatch:
 permissions:
   actions: write
@@ -18,7 +18,7 @@ concurrency:
   group: ifs
   cancel-in-progress: false
 env:
-  IFS_BASE: https://IFS-BLOB-STORE-ID.public.blob.vercel-storage.com   # PLACEHOLDER: public URL of the new store, filled in before the first run
+  IFS_BASE: https://n8icphnaeuvvcvob.public.blob.vercel-storage.com   # store skycast-ifs-feed (store_n8ICpHNaeUVVcvOb)
 jobs:
   ifs:
     runs-on: ubuntu-24.04   # pinned: "latest" moves to a new Ubuntu under the build

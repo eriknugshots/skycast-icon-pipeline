@@ -166,15 +166,13 @@ def test_workflow_text_pins(feed):
 
 
 def test_ifs_workflow_text_pins():
-    # ifs.yml is aifs.yml's shape, but manual-only until its store exists
+    # ifs.yml is aifs.yml's shape, live on its own store
     text = (ROOT / ".github/workflows/ifs.yml").read_text()
     assert "name: ifs\n" in text
     on = text.split("\non:\n")[1].split("\npermissions:")[0]
-    assert on.strip() == "workflow_dispatch:"                 # no schedule until the store exists
-    assert "schedule:" not in text
-    assert "the schedule goes back" in text
-    assert "IFS_BASE: https://IFS-BLOB-STORE-ID.public.blob.vercel-storage.com" in text
-    assert "PLACEHOLDER" in text
+    assert 'cron: "41 */4 * * *"' in on and "workflow_dispatch:" in on
+    assert "IFS_BASE: https://n8icphnaeuvvcvob.public.blob.vercel-storage.com" in text
+    assert "PLACEHOLDER" not in text
     assert "cancel-in-progress: false" in text
     assert "actions: write" in text and "contents: write" in text
     assert "secrets.IFS_BLOB_READ_WRITE_TOKEN" in text

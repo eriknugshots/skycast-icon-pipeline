@@ -1,13 +1,15 @@
-# globalfeed/build.py — one GFS or AIFS run -> the feed's files.
+# globalfeed/build.py — one GFS, AIFS or IFS run -> the feed's files.
 #
 # Same layout the ICON build writes for cloud cover, so the app reads it with
 # the decoders it already has:
 #   tiles/<run>/<sq>.icl   ICL1, history + main steps
 #   blocks/<run>/<sq>.icb  ICL2, the same steps in day blocks
 #   tail/<run>/<sq>.icl    ICL1, the tail steps alone
-#   thick/<run>/<sq>.ict   ICT1 (ice, water), GFS only, over model.main_steps
-#                          alone: no history, no tail. A failure here drops the
-#                          thick key and files; the cover is published anyway.
+#   thick/<run>/<sq>.ict   ICT1 (ice, water), GFS (integrated over its pressure
+#                          levels) and IFS (its column fields), over
+#                          model.main_steps alone: no history, no tail. A failure
+#                          here drops the thick key and files; the cover is
+#                          published anyway.
 #   manifest.json
 # Memory follows hrrr/build.py: each worker reads one hour, puts it on the
 # feed's grid and cuts it straight into per-square uint8 [4][41][41] slices,
@@ -39,10 +41,13 @@ SYNOPTIC = (0, 6, 12, 18)
 
 def newest_complete_run(model, exists, now):
     """The newest of the last four synoptic cycles at or before now whose last
-    tail step is published, or None."""
+    tail step is published, or None. Cycles outside model.run_hours are skipped
+    without a request."""
     top = now.replace(hour=now.hour - now.hour % 6, minute=0, second=0, microsecond=0)
     for back in range(4):
         run = top - dt.timedelta(hours=6 * back)
+        if run.hour not in model.run_hours:
+            continue
         if exists(model.index_url(run, model.tail_steps[-1])):
             return run
     return None
@@ -115,9 +120,9 @@ def _read_thick(model, run, fh, get, sleep):
 
 def build_thick(model, run, out_dir, get, sleep, names):
     """thick/<run>/<sq>.ict over model.main_steps; returns the manifest's `thick`
-    entry, or None (no levels, or any failure: the files are removed and the
-    cover goes out without thickness)."""
-    if not model.thick_levels:
+    entry, or None (no thickness source, or any failure: the files are removed
+    and the cover goes out without thickness)."""
+    if not model.has_thick:
         return None
     t0 = time.monotonic()
 
@@ -169,7 +174,11 @@ def build(model, run, out_dir, get, now, state, sleep=time.sleep, steps=None):
     base = history.hour_of(run)
     gfs_like = model.name == "gfs"
 
-    head_steps = list(range(history.HEAD_STEPS)) if gfs_like else [0]
+    # GFS keeps six hourly head steps (pipeline.history); the 6-hourly feeds
+    # keep one step per 6 h up to the next run they build (history6): AIFS f000,
+    # IFS (two runs a day) f000 and f006.
+    head_steps = (list(range(history.HEAD_STEPS)) if gfs_like
+                  else list(range(0, model.run_spacing, 6)))
     keep = tuple(s for s in head_steps if s in model.main_steps)
     own, kept = _hours(model, run, model.main_steps, get, sleep, names, keep=keep)
     own_hours = [base + s for s in model.main_steps]

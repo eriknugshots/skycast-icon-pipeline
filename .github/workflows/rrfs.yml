@@ -6,9 +6,9 @@ name: rrfs
 # loop checks every 10 minutes. A build runs inline: NOMADS is paced to under
 # 100 requests a minute (rrfs/build.py), so it takes several minutes.
 # Publishes to its own Vercel Blob store (RRFS_BASE), never another feed's.
-# Until RRFS_BASE and the RRFS_BLOB_READ_WRITE_TOKEN secret exist, runs start
-# only by hand: put the schedule back (cron "23 */4 * * *") when RRFS goes live.
 on:
+  schedule:
+    - cron: "23 */4 * * *"
   workflow_dispatch:
 permissions:
   actions: write
@@ -17,7 +17,7 @@ concurrency:
   group: rrfs
   cancel-in-progress: false
 env:
-  RRFS_BASE: https://RRFS-BLOB-STORE-ID.public.blob.vercel-storage.com   # PLACEHOLDER: public URL of the new store, filled in before the first run
+  RRFS_BASE: https://gnjxcodxuihunlyd.public.blob.vercel-storage.com   # store skycast-rrfs-feed (store_gnjXCoDXuihUNLyd)
 jobs:
   rrfs:
     runs-on: ubuntu-24.04   # pinned: "latest" moves to a new Ubuntu under the build

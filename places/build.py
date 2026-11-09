@@ -74,6 +74,13 @@ FLOOR = {"PPLC": 2_000_000_000, "PCLI": 2_000_000_000,
 for _c in ("MT", "MTS", "PK", "PKS", "VLC", "ISL", "ISLS", "LK", "LKS", "PRK",
            "NTNL", "RSV", "CAPE", "BCH", "DSRT", "VAL", "FLLS", "GLCR", "RGN"):
     FLOOR[_c] = 3_000
+# A national park is what people type: "Glacier National Park" must not lose the
+# top-N cut of the "glacier" file to a hundred glaciers and creeks that tie at the
+# ordinary park floor (3000) and sort ahead by key. A PRK or RES whose name ends in
+# "National Park" ranks as 25,000: above ties, glaciers and small towns, above the
+# admin-seat floors (20,000), below every county seat (ADM2 50,000) and real city.
+NATIONAL_PARK_FLOOR = 25_000
+NATIONAL_PARK_FEATURES = ("PRK", "RES")
 WORD_DIVISOR = 50              # a word row ranks as a fiftieth of its place
 
 ALIASES = {"mount": "mt", "mt": "mount", "saint": "st", "st": "saint",
@@ -110,10 +117,18 @@ def _clean(s):
     return _SPACE.sub(" ", s).strip()
 
 
-def rank_of(feature, population, kind):
-    """kind: 3 the place's own name, 2 an alternate or alias, 1 a word.
+def floor_of(feature, name=""):
+    floor = FLOOR.get(feature, 0)
+    if feature in NATIONAL_PARK_FEATURES and name.strip().endswith("National Park"):
+        floor = max(floor, NATIONAL_PARK_FLOOR)
+    return floor
+
+
+def rank_of(feature, population, kind, name=""):
+    """kind: 3 the place's own name, 2 an alternate or alias, 1 a word. `name` is
+    the place's own name (a national park ranks above the ordinary park floor).
     Returns the stored (inverted, zero padded) rank: bytes sort best first."""
-    score = max(population, FLOOR.get(feature, 0))
+    score = max(population, floor_of(feature, name))
     if kind == 1:
         score //= WORD_DIVISOR
     return "%0*d" % (RANK_W, RANK_BASE - (score * 4 + kind))
@@ -134,7 +149,7 @@ def place_rows(name, alternates, tail, feature, population, ascii_name=""):
         pk = norm(ascii_name)
     if pk:
         seen.add(pk)
-        yield pk, rank_of(feature, population, 3), f"{pk}\t{shown}\t{tail}\t"
+        yield pk, rank_of(feature, population, 3, name), f"{pk}\t{shown}\t{tail}\t"
     if alternates:
         # spellings sharing one key collapse to one row: the spelling equal to the key wins ("Malta" over "Mal'ta"), then pure ASCII, else the first
         best = {}
@@ -146,7 +161,7 @@ def place_rows(name, alternates, tail, feature, population, ascii_name=""):
                     best[k] = alt
         for k, alt in best.items():
             seen.add(k)
-            yield k, rank_of(feature, population, 2), f"{k}\t{alt}\t{tail}\t{shown}"
+            yield k, rank_of(feature, population, 2, name), f"{k}\t{alt}\t{tail}\t{shown}"
     words = [w for w in _WORDS.split(name) if w]
     if len(words) < 2:
         return
@@ -155,12 +170,12 @@ def place_rows(name, alternates, tail, feature, population, ascii_name=""):
         k = ALIASES[first] + norm("".join(words[1:]))
         if k not in seen:
             seen.add(k)
-            yield k, rank_of(feature, population, 2), f"{k}\t{shown}\t{tail}\t"
+            yield k, rank_of(feature, population, 2, name), f"{k}\t{shown}\t{tail}\t"
     for w in words[1:]:
         k = norm(w)
         if len(k) >= 3 and k not in seen:
             seen.add(k)
-            yield k, rank_of(feature, population, 1), f"{k}\t{shown}\t{tail}\t"
+            yield k, rank_of(feature, population, 1, name), f"{k}\t{shown}\t{tail}\t"
 
 
 def _stem(prefix):

@@ -27,6 +27,10 @@ class Model:
     workers: int
     _url: str
     _index_ext: tuple  # (suffix to replace or "", replacement/addition)
+    # Pressure levels (hPa) of the ICMR / CLMR messages the thickness feed
+    # integrates; empty = this model publishes no thickness (AIFS: its open data
+    # has only tcw, which includes vapour, and humidity: no cloud ice or water).
+    thick_levels: tuple = ()
 
     def url(self, run, fh):
         return self._url.format(d=run.strftime("%Y%m%d"), h=run.hour, f=fh)
@@ -52,6 +56,10 @@ GFS = Model(
     workers=8,
     _url="https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.{d}/{h:02d}/atmos/gfs.t{h:02d}z.pgrb2.0p25.f{f:03d}",
     _index_ext=("", ".idx"),
+    # GFS's 21 mandatory levels from 100 mb (their integral matches GFS's own
+    # CWAT: median ratio 0.998, correlation 0.994, plan 2026-11-09).
+    thick_levels=(100, 150, 200, 250, 300, 350, 400, 450, 500, 550, 600, 650, 700, 750,
+                  800, 850, 900, 925, 950, 975, 1000),
 )
 
 AIFS = Model(

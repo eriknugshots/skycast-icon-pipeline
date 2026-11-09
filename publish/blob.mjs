@@ -10,7 +10,10 @@
 // manifest.json LAST, cached 60 s, so no phone ever reads a manifest whose
 // squares are not there yet. Then every folder but the new manifest's and the
 // previous manifest's is deleted (prune.mjs): a phone that read the old
-// manifest a moment ago is still fetching its squares.
+// manifest a moment ago is still fetching its squares. The deletes are paced
+// (sweep.mjs) and a failure among them does NOT fail the publish: the new
+// manifest is live by then, and the next publish's prune lists the whole store
+// and picks up whatever is left (a ::warning:: says so).
 //
 // Several roots may be given: `node blob.mjs ../site ../blob` uploads site/
 // (what Pages carries too) and then blob/ (Blob only: blocks, thickness and the
@@ -24,6 +27,8 @@ import { put, list, del } from '@vercel/blob';
 import { pathsToDelete } from './prune.mjs';
 import { planRoots } from './roots.mjs';
 import { createRetry, paceDelay, filesToSend } from './pace.mjs';
+import { pruneOldRuns, DELETES_PER_SEC } from './sweep.mjs';
+import { listAll as listStore, readManifest } from './store.mjs';
 
 const YEAR_S = 365 * 24 * 3600;
 const MANIFEST_S = 60;            // Blob's shortest cache time
@@ -52,25 +57,10 @@ async function pool(items, n, fn) {
   }));
 }
 
-async function listAll() {
-  const blobs = [];
-  let cursor;
-  do {
-    const r = await retry('list', () => list({ cursor, limit: 1000 }));
-    for (const b of r.blobs) blobs.push(b);
-    cursor = r.hasMore ? r.cursor : undefined;
-  } while (cursor);
-  return blobs;
-}
+// Deletes a second (sweep.mjs): 100 a batch, so 1 call a second by default.
+const DEL_PER_SEC = Number(process.env.BLOB_DELETES_PER_SEC) || DELETES_PER_SEC;
 
-async function previousManifest(blobs) {
-  const b = blobs.find((x) => x.pathname === 'manifest.json');
-  if (!b) return null;
-  try {
-    const r = await fetch(`${b.url}?t=${Date.now()}`, { cache: 'no-store' });
-    return r.ok ? await r.json() : null;
-  } catch { return null; }
-}
+const listAll = () => listStore(list, retry);
 
 async function main() {
   const dirs = process.argv.slice(2);
@@ -84,7 +74,7 @@ async function main() {
   if (!manifestDir) throw new Error(`no manifest.json in ${dirs.join(', ')}`);
   const current = JSON.parse(await readFile(join(manifestDir, 'manifest.json'), 'utf8'));
   const before = await listAll();
-  const previous = await previousManifest(before);
+  const previous = await readManifest(before);
 
   const t0 = Date.now();
   const bytesByDir = Object.fromEntries(dirs.map((d) => [d, 0]));
@@ -112,12 +102,9 @@ async function main() {
   }));
   console.log(`manifest.json → run ${current.run}`);
 
-  const doomed = pathsToDelete((await listAll()).map((b) => b.pathname), { current, previous });
-  for (let i = 0; i < doomed.length; i += 1000) {
-    const batch = doomed.slice(i, i + 1000);
-    await retry('delete', () => del(batch));
-  }
-  console.log(`deleted ${doomed.length} files from older runs`);
+  // From here on the publish has worked: the new run is live. A failed prune
+  // leaves old files for the next publish's prune, never a red build.
+  await pruneOldRuns({ listAll, pathsToDelete, current, previous, del, retry, perSec: DEL_PER_SEC });
 }
 
 main().catch((e) => { console.error(`::error::blob publish failed: ${e.message || e}`); process.exit(1); });

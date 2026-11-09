@@ -431,3 +431,35 @@ def test_primary_column_marks_alternate_rows_only(tmp_path):
     for key in ("mountbachelor", "mtbachelor", "bachelor"):    # name, alias, word rows
         r = rows_of(out, m, key)[0]
         assert len(r) == 12 and r[1] == "Mount Bachelor" and r[11] == "", key
+
+
+def _glacier_rows():
+    rows = [gn(i, "Glacier%03d" % i, cls="H", code="GLCR") for i in range(1, 121)]      # 120 ties at the glacier floor
+    rows += [gn(1000, "Glacier National Park", cls="L", code="PRK"),
+             gn(1001, "Glacier Bay National Park", cls="L", code="RES"),
+             gn(1002, "Glacier Bay Park", cls="L", code="PRK"),                          # not a national park by name
+             gn(1003, "Glacier National Park Visitor Center", cls="S", code="PRK"),      # does not END in it
+             gn(1004, "Glacierville", pop=24_000),                                       # a small town
+             gn(1005, "Glacier City", pop=60_000)]                                       # a real city
+    return rows
+
+
+def test_national_park_survives_the_top_n_cut_over_ties_and_small_towns_not_cities(tmp_path):
+    out, m = run(tmp_path, _glacier_rows(), max_shard_bytes=4000, top_n=20)
+    top = [l.split("\t") for l in (out / m["tiles"] / "glacier.tsv").read_text().splitlines()]
+    assert len(top) == 20
+    names = [c[1] for c in top]
+    assert names[0] == "Glacier City"                                     # a real city still wins
+    assert sorted([names.index("Glacier National Park"), names.index("Glacier Bay National Park")]) == [1, 2]   # then the parks (tied: key order), then ...
+    assert names.index("Glacierville") == 3                               # ... the 24,000-person town below them
+    # the ordinary park floor is untouched: a park whose name does not end in "National Park" is just a tie
+    assert "Glacier Bay Park" not in names and "Glacier National Park Visitor Center" not in names
+
+
+def test_national_park_floor_sits_between_the_ordinary_floor_and_real_places():
+    assert pb.FLOOR["PRK"] < pb.NATIONAL_PARK_FLOOR < pb.FLOOR["ADM2"]
+    assert pb.NATIONAL_PARK_FLOOR > 20_000          # the admin-seat floors
+    assert pb.rank_of("PRK", 0, 3, "Glacier National Park") < pb.rank_of("PRK", 0, 3, "Glacier Bay Park")
+    assert pb.rank_of("RES", 0, 3, "Yosemite National Park") == pb.rank_of("PRK", 0, 3, "Yosemite National Park")
+    assert pb.rank_of("PRK", 0, 3) == pb.rank_of("PRK", 0, 3, "Glacier Bay Park")       # name is optional
+    assert pb.rank_of("PPL", 0, 3, "Springfield National Park") == pb.rank_of("PPL", 0, 3)   # PRK/RES only

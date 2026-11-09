@@ -5,27 +5,32 @@
 #   tiles/<run>/<sq>.icl   ICL1, history + main steps
 #   blocks/<run>/<sq>.icb  ICL2, the same steps in day blocks
 #   tail/<run>/<sq>.icl    ICL1, the tail steps alone
+#   thick/<run>/<sq>.ict   ICT1 (ice, water), GFS only, over model.main_steps
+#                          alone: no history, no tail. A failure here drops the
+#                          thick key and files; the cover is published anyway.
 #   manifest.json
 # Memory follows hrrr/build.py: each worker reads one hour, puts it on the
 # feed's grid and cuts it straight into per-square uint8 [4][41][41] slices,
 # so only the small slices accumulate, never a stack of world arrays.
 import concurrent.futures as cf
 import datetime as dt
+import dataclasses
 import json
+import shutil
 import time
 from pathlib import Path
 
 import numpy as np
 
-from pipeline import blocks, history
+from pipeline import blocks, history, thick
 from pipeline.dwd import run_id, run_iso
 from pipeline.encode import encode_square, quantize
-from pipeline.site import blocks_path, build_manifest, tail_path, tiles_path
+from pipeline.site import blocks_path, build_manifest, tail_path, thick_path, tiles_path
 from pipeline.squares import all_squares, parse_name, slice_square
 
 from . import history6
-from .grib import read_step
-from .latlon import to_feed
+from .grib import read_step, read_thick_step
+from .latlon import to_feed, to_feed_float
 
 RETRIES = 2          # extra attempts per forecast hour
 QUANT_STEP = 2       # the same step the ICON Blob copy uses (run_build.QUANT_STEP)
@@ -98,9 +103,68 @@ def _write(out_dir, rel, names, hours, per_hour, suffix, encode):
         (d / f"{n}{suffix}").write_bytes(encode(lat, lon, hours, cube))
 
 
-def build(model, run, out_dir, get, now, state, sleep=time.sleep):
+def _read_thick(model, run, fh, get, sleep):
+    for attempt in range(RETRIES + 1):
+        try:
+            return read_thick_step(model, run, fh, get)
+        except Exception:
+            if attempt == RETRIES:
+                raise
+            sleep(2 * (attempt + 1))
+
+
+def build_thick(model, run, out_dir, get, sleep, names):
+    """thick/<run>/<sq>.ict over model.main_steps; returns the manifest's `thick`
+    entry, or None (no levels, or any failure: the files are removed and the
+    cover goes out without thickness)."""
+    if not model.thick_levels:
+        return None
+    t0 = time.monotonic()
+
+    def one(fh):
+        d = _read_thick(model, run, fh, get, sleep)
+        # kg/m2 regridded as floats, then to the byte per node: no cover-style
+        # rounding or clipping, and no QUANT_STEP.
+        world = np.stack([thick.thick_bytes(to_feed_float(d["lat"], d["lon"], d[k]))
+                          for k in ("ice", "water")])
+        return _cut(world, names)
+
+    ex = cf.ThreadPoolExecutor(max_workers=max(1, model.workers))
+    try:
+        try:
+            futures = [ex.submit(one, fh) for fh in model.main_steps]
+            per = [f.result() for f in futures]
+        except BaseException:
+            ex.shutdown(wait=True, cancel_futures=True)
+            raise
+        ex.shutdown(wait=True)
+        base = history.hour_of(run)
+        hours = [base + s for s in model.main_steps]
+        d = Path(out_dir) / thick_path(run)
+        d.mkdir(parents=True, exist_ok=True)
+        total = 0
+        for n in names:
+            lat, lon = parse_name(n)
+            data = blocks.encode_blocks(b"ICT1", lat, lon, hours, np.stack([p[n] for p in per]))
+            (d / f"{n}.ict").write_bytes(data)
+            total += len(data)
+    except Exception as e:
+        print(f"::warning::thickness failed: {type(e).__name__}: {e}")
+        shutil.rmtree(Path(out_dir) / "thick", ignore_errors=True)
+        return None
+    print(f"thickness: {len(names)} squares, {len(model.main_steps)} steps, "
+          f"{total / 1e6:.1f} MB, {time.monotonic() - t0:.0f} s")
+    return {"format": "ICT1", "run": run_iso(run), "runMs": int(run.timestamp() * 1000),
+            "tiles": thick_path(run)}
+
+
+def build(model, run, out_dir, get, now, state, sleep=time.sleep, steps=None):
     """Write the run into out_dir; returns the square names. A step that still
-    fails after its retries raises: a build is all or nothing."""
+    fails after its retries raises: a build is all or nothing (thickness
+    excepted: see build_thick). steps limits the forecast hours (a sample run:
+    no tail, the manifest says complete: false, the history head is not saved)."""
+    if steps is not None:
+        model = dataclasses.replace(model, main_steps=tuple(sorted(set(int(s) for s in steps))), tail_steps=())
     names = all_squares()
     base = history.hour_of(run)
     gfs_like = model.name == "gfs"
@@ -140,15 +204,18 @@ def build(model, run, out_dir, get, now, state, sleep=time.sleep):
            lambda lat, lon, h, cube: blocks.encode_blocks(b"ICL2", lat, lon, h, cube))
     del per_hour, past, own
 
-    tail_hours = [base + s for s in model.tail_steps]
-    tail_cut, _ = _hours(model, run, model.tail_steps, get, sleep, names)
-    _write(out_dir, tail_path(run), names, tail_hours, tail_cut, ".icl", encode_square)
-    tail = {"run": run_iso(run), "runMs": int(run.timestamp() * 1000),
-            "stepsMs": [h * 3600 * 1000 for h in tail_hours], "tiles": tail_path(run)}
+    tail = None
+    if model.tail_steps:
+        tail_hours = [base + s for s in model.tail_steps]
+        tail_cut, _ = _hours(model, run, model.tail_steps, get, sleep, names)
+        _write(out_dir, tail_path(run), names, tail_hours, tail_cut, ".icl", encode_square)
+        tail = {"run": run_iso(run), "runMs": int(run.timestamp() * 1000),
+                "stepsMs": [h * 3600 * 1000 for h in tail_hours], "tiles": tail_path(run)}
 
-    m = json.loads(build_manifest(run, now, hours, names, len(past_hours), True, tail=tail,
-                                  blocks=blocks_path(run)))
-    for k in ("columns", "thick"):
+    thickness = build_thick(model, run, out_dir, get, sleep, names)
+    m = json.loads(build_manifest(run, now, hours, names, len(past_hours), steps is None, tail=tail,
+                                  blocks=blocks_path(run), thick=thickness))
+    for k in ("columns",) + (() if thickness else ("thick",)):
         m.pop(k, None)
     m["model"] = model.name
     m["attribution"] = model.attribution

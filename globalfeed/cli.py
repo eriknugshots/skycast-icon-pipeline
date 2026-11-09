@@ -6,7 +6,7 @@ import time
 import urllib.error
 import urllib.request
 
-from hrrr_build import _exists, _get, _http_text, BUILT, NOTHING_TO_DO, FAILED
+from hrrr_build import _exists, _get, _http_text, parse_hours, BUILT, NOTHING_TO_DO, FAILED
 
 from . import build as gb
 
@@ -20,6 +20,7 @@ def main(model, argv=None, now=None, exists=_exists, get=_get, http_text=_http_t
     p.add_argument("--out", default=f"site-{model.name}")
     p.add_argument("--state", default=f"state-{model.name}")
     p.add_argument("--live-manifest")
+    p.add_argument("--hours", help="only these forecast hours, e.g. 0,3,6-9 (a sample run: no tail, complete: false)")
     a = p.parse_args(argv)
     try:
         now = now or _now()
@@ -36,7 +37,7 @@ def main(model, argv=None, now=None, exists=_exists, get=_get, http_text=_http_t
             if live == iso:
                 print(f"live site already carries {iso}")
                 return NOTHING_TO_DO
-        names = gb.build(model, run, a.out, get, now, a.state, sleep=sleep)
+        names = gb.build(model, run, a.out, get, now, a.state, sleep=sleep, steps=parse_hours(a.hours))
         print(f"built {iso}: {len(names)} squares")
         return BUILT
     except Exception as e:

@@ -24,8 +24,9 @@ def _sorted_grid(lat, lon, values):
     return grid
 
 
-def to_feed(lat, lon, values):
-    """-> uint8[NY][NX] on the feed's layout: node (r, c) at (-90 + r*DEG, -180 + c*DEG)."""
+def to_feed_float(lat, lon, values):
+    """-> float64[NY][NX] on the feed's layout, in the source's own units
+    (kg/m2 for the thickness feed); NaN where no source value reaches a node."""
     grid = _sorted_grid(lat, lon, values)
     ok = ~np.isnan(grid)
     s = np.where(ok, grid, 0.0)
@@ -46,7 +47,17 @@ def to_feed(lat, lon, values):
     fs[:, 1::2] = (rs + np.roll(rs, -1, axis=1))[:, :NX // 2]
     fn[:, 1::2] = (rn + np.roll(rn, -1, axis=1))[:, :NX // 2]
 
-    out = np.full((NY, NX), NODATA, dtype=np.uint8)
+    out = np.full((NY, NX), np.nan)
     have = fn > 0
-    out[have] = np.rint(np.clip(fs[have] / fn[have], 0, 100)).astype(np.uint8)
+    out[have] = fs[have] / fn[have]
+    return out
+
+
+def to_feed(lat, lon, values):
+    """-> uint8[NY][NX] cloud cover (rounded, 0..100, 255 = no data) on the feed's layout:
+    node (r, c) at (-90 + r*DEG, -180 + c*DEG)."""
+    f = to_feed_float(lat, lon, values)
+    out = np.full(f.shape, NODATA, dtype=np.uint8)
+    have = ~np.isnan(f)
+    out[have] = np.rint(np.clip(f[have], 0, 100)).astype(np.uint8)
     return out

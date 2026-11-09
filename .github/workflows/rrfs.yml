@@ -1,0 +1,67 @@
+name: rrfs
+# RRFS Direct: our own North America feed from NOAA's RRFS (13 km, f000-f084
+# hourly, 00/06/12/18Z). Like hrrr.yml, one run watches for 5 hours and then
+# starts the next (a workflow may dispatch workflows with its own token); the
+# schedule only restarts the chain if it ever breaks. Runs are 6 h apart, so the
+# loop checks every 10 minutes. A build runs inline: NOMADS is paced to under
+# 100 requests a minute (rrfs/build.py), so it takes several minutes.
+# Publishes to its own Vercel Blob store (RRFS_BASE), never another feed's.
+# Until RRFS_BASE and the RRFS_BLOB_READ_WRITE_TOKEN secret exist, runs start
+# only by hand: put the schedule back (cron "23 */4 * * *") when RRFS goes live.
+on:
+  workflow_dispatch:
+permissions:
+  actions: write
+  contents: read
+concurrency:
+  group: rrfs
+  cancel-in-progress: false
+env:
+  RRFS_BASE: https://RRFS-BLOB-STORE-ID.public.blob.vercel-storage.com   # PLACEHOLDER: public URL of the new store, filled in before the first run
+jobs:
+  rrfs:
+    runs-on: ubuntu-24.04   # pinned: "latest" moves to a new Ubuntu under the build
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r requirements.txt
+      - run: python -m pytest -q
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - run: cd publish && npm ci --no-audit --no-fund && node --test
+      - name: watch NOAA, build each new RRFS run
+        id: loop
+        env:
+          PYTHONUNBUFFERED: "1"
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.RRFS_BLOB_READ_WRITE_TOKEN }}
+        run: |
+          end=$(( $(date +%s) + 5 * 3600 ))
+          while [ "$(date +%s)" -lt "$end" ]; do
+            # rrfs_build.py: 0 built, 3 nothing new, anything else failed. A
+            # failure (or a build killed by the 40 min timeout, exit 124/137) is
+            # retried on the next pass, so it must not end the loop. A failed
+            # build may leave a partial site-rrfs: only exit 0 publishes it.
+            set +e
+            timeout -k 10 2400 python rrfs_build.py --out site-rrfs --live-manifest "$RRFS_BASE/manifest.json"
+            rc=$?
+            set -e
+            if [ "$rc" = "0" ]; then
+              # A failed publish is retried by the next pass (the live manifest
+              # still names the old run), so it too must not end the loop.
+              (cd publish && node blob.mjs ../site-rrfs) || echo "publish failed, will retry"
+              rm -rf site-rrfs
+            elif [ "$rc" != "3" ]; then
+              echo "rrfs_build.py failed (exit $rc), retrying next pass"
+              rm -rf site-rrfs
+            fi
+            sleep 600
+          done
+      - name: start the next run
+        # Not after a broken setup step (pip, pytest, npm, node --test): that
+        # would restart a failing run at once; the 4-hourly cron restarts it.
+        if: always() && steps.loop.conclusion != 'skipped'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run rrfs.yml --ref main

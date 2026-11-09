@@ -1,4 +1,4 @@
-# globalfeed/cli.py — the command line shared by gfs_build.py and aifs_build.py.
+# globalfeed/cli.py — the command line shared by gfs_build.py, aifs_build.py and ifs_build.py.
 import argparse
 import datetime as dt
 import json

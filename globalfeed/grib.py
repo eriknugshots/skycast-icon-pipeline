@@ -1,5 +1,5 @@
-# globalfeed/grib.py — byte-range readers for GFS (NCEP .idx) and AIFS (ECMWF
-# .index JSON) cloud-cover fields. Same approach as hrrr/grib.py: read the
+# globalfeed/grib.py — byte-range readers for GFS (NCEP .idx) and AIFS / IFS
+# (ECMWF .index JSON) cloud-cover fields. Same approach as hrrr/grib.py: read the
 # sidecar index, then ask the server for just the messages we want.
 import json
 
@@ -29,10 +29,10 @@ def _ncep_ranges(model, index_text, fh):
     return out
 
 
-def _ecmwf_ranges(model, index_text):
+def _ecmwf_ranges(model, index_text, keys=None):
     rows = [json.loads(ln) for ln in index_text.strip().split("\n") if ln.strip()]
     out = {}
-    for key in model.fields:
+    for key in (model.fields if keys is None else keys):
         r = next((r for r in rows if r.get("param") == key and r.get("levtype") == "sfc"), None)
         if r is None:
             raise KeyError(f"{key} (sfc) not in index")
@@ -67,10 +67,22 @@ def read_step(model, run, fh, get):
                 out["lat"] = lat
                 out["lon"] = np.where(lon > 180, lon - 360, lon)
             miss = eccodes.codes_get(g, "missingValue")
+            scale = _cover_scale(g, key) if model.check_cover_units else 1.0
         finally:
             eccodes.codes_release(g)
-        out[key] = np.where(np.isclose(vals, miss) | (vals < 0), np.nan, vals)
+        out[key] = np.where(np.isclose(vals, miss) | (vals < 0), np.nan, vals * scale)
     return out
+
+
+# GRIB units of a cover field -> factor to percent.
+_PERCENT = {"%": 1.0, "(0 - 1)": 100.0}
+
+
+def _cover_scale(g, key):
+    units = eccodes.codes_get(g, "units")
+    if units not in _PERCENT:
+        raise ValueError(f"{key}: cover in unexpected units {units!r}")
+    return _PERCENT[units]
 
 
 # ---- Thickness (ICT1) ---------------------------------------------------------
@@ -134,9 +146,12 @@ def _decode(g):
 def read_thick_step(model, run, fh, get):
     """Column cloud ice and water for one forecast hour, kg/m2, on the source
     grid: {"lat", "lon", "ice", "water"} (lon in -180..180). get(url, rng=None)
-    -> bytes is injected. Messages whose idx rows touch are fetched as one
-    range. A level missing at a cell adds nothing there; a cell missing at every
-    level is NaN."""
+    -> bytes is injected. A model with thick_fields reads its column totals
+    (read_column_thick); one with thick_levels integrates them here: messages
+    whose idx rows touch are fetched as one range, a level missing at a cell
+    adds nothing there, and a cell missing at every level is NaN."""
+    if model.thick_fields:
+        return read_column_thick(model, run, fh, get)
     if not model.thick_levels:
         raise ValueError(f"{model.name} has no thickness levels")
     ranges = thick_ranges(model, get(model.index_url(run, fh)).decode(), fh)
@@ -166,4 +181,35 @@ def read_thick_step(model, run, fh, get):
                 acc += np.where(good, v, 0.0) * weights[pos]
                 seen |= good
         out[key] = np.where(seen, acc, np.nan)
+    return out
+
+
+# ---- Thickness from column fields (IFS) ---------------------------------------
+# ECMWF's tciw / tclw are already the column's cloud ice and liquid water in
+# kg/m2: one sfc message each, read from the same .index as the cover.
+_KG_M2 = "kg m**-2"
+
+
+def read_column_thick(model, run, fh, get):
+    """{"lat", "lon", "ice", "water"} from model.thick_fields, kg/m2 as
+    published (negative or missing values NaN). One range request per field.
+    ValueError if a message is not in kg m**-2; KeyError if the index lacks a field."""
+    keys = [k for k, _ in model.thick_fields]
+    ranges = _ecmwf_ranges(model, get(model.index_url(run, fh)).decode(), keys)
+    url = model.url(run, fh)
+    out = {}
+    for key, name in model.thick_fields:
+        g = eccodes.codes_new_from_message(get(url, ranges[key]))
+        try:
+            units = eccodes.codes_get(g, "units")
+            if units != _KG_M2:
+                raise ValueError(f"{key}: expected {_KG_M2}, got {units!r}")
+            if "lat" not in out:
+                lat = eccodes.codes_get_array(g, "latitudes")
+                lon = eccodes.codes_get_array(g, "longitudes")
+                out["lat"] = lat
+                out["lon"] = np.where(lon > 180, lon - 360, lon)
+            out[name] = _decode(g)
+        finally:
+            eccodes.codes_release(g)
     return out

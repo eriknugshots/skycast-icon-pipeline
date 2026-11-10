@@ -20,12 +20,12 @@ jobs:
     runs-on: ubuntu-24.04   # pinned: "latest" moves to a new Ubuntu under the build
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: { python-version: "3.12" }
       - run: pip install -r requirements.txt
       - run: python -m pytest -q
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with: { node-version: "22" }
       - run: cd publish && npm ci --no-audit --no-fund && node --test
       - name: build the newest AQM run if the live site lacks it

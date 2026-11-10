@@ -28,8 +28,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with: { node-version: "22" }
       - run: cd publish && npm ci --no-audit --no-fund && node --test
       - name: prune ${{ inputs.store }} (dry run ${{ inputs.dry_run }})

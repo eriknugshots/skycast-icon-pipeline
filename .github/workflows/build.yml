@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-24.04   # pinned: "latest" moves to a new Ubuntu under the build
     timeout-minutes: 150
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: install cdo (conda-forge via micromamba — no apt package worth having)
         run: |
           wget -qO mm https://micro.mamba.pm/api/micromamba/linux-64/latest
@@ -35,7 +35,7 @@ jobs:
           echo "/tmp/cdo/bin" >> "$GITHUB_PATH"
           export PATH="/tmp/cdo/bin:$PATH"
           command -v cdo && cdo -V 2>&1 | head -1
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with: { python-version: "3.12" }
       - run: pip install -r requirements.txt
       - run: python -m pytest -q
@@ -92,7 +92,7 @@ jobs:
           git push --force "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         if: steps.build.outputs.rc == '0' && !inputs.steps && !inputs.squares
         with: { node-version: "22" }
       # site/ and then blob/ (the Blob-only families: blocks, thickness and the

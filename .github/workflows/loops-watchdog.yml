@@ -1,0 +1,42 @@
+name: loops-watchdog
+# Restarts a broken feed loop within the hour. Each loop (tick, hrrr, rrfs, gfs,
+# aifs, ifs) runs 5 h and then dispatches its own next run; when a dispatch
+# fails (GitHub glitch: RRFS twice on 2026-11-09, 0 jobs) the chain waits for
+# that workflow's 4-hourly cron. Every hour this checks each loop for a run
+# that is not completed (queued, waiting, in progress) and dispatches one only
+# when there is none. A failed listing never dispatches: no storm on a GitHub
+# outage. The loops' own crons stay as the second net.
+on:
+  schedule:
+    - cron: "7 * * * *"
+  workflow_dispatch:
+permissions:
+  actions: write
+  contents: read
+concurrency:
+  group: loops-watchdog
+  cancel-in-progress: true
+jobs:
+  watchdog:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: restart any loop with no live run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          LOOPS: tick hrrr rrfs gfs aifs ifs
+        run: |
+          for wf in $LOOPS; do
+            if ! live=$(gh run list --workflow "$wf.yml" --limit 20 --json status \
+                  --jq '[.[] | select(.status != "completed")] | length'); then
+              echo "$wf: listing failed, leaving it alone"
+              continue
+            fi
+            if [ "$live" = "0" ]; then
+              echo "::warning::$wf had no live run; restarting it"
+              gh workflow run "$wf.yml" --ref main || echo "$wf: dispatch failed"
+            else
+              echo "$wf: $live live"
+            fi
+          done

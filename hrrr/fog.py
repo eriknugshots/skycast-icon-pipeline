@@ -5,6 +5,12 @@
 # T, RH and height at 1000..700 mb, plus 2 m T/RH and surface height. The grid is
 # HRRR's Lambert conformal; lcc_ij inverts it so a lat/lon lattice can be
 # bilinearly sampled from the native 3 km cells.
+#
+# read_fog_fields contract: every field, "lat" and "lon" is a FLAT 1-D array in the
+# GRIB's order, n = j * Nx + i with i (along x) fastest and the first point at the
+# south-west corner; reshape(Ny, Nx) gives values2d[j, i] for sample_bilinear.
+# "Nx", "Ny" and "grid" (the grid_keys dict, ready for lcc_params) come from the
+# first message.
 import math
 
 import numpy as np
@@ -50,13 +56,15 @@ def read_fog_fields(run, fh, get):
             vals = eccodes.codes_get_values(g)
             miss = eccodes.codes_get(g, "missingValue")
             if "lat" not in out:
+                out["grid"] = grid_keys(g)
+                out["Nx"], out["Ny"] = int(out["grid"]["Nx"]), int(out["grid"]["Ny"])
                 lat = eccodes.codes_get_array(g, "latitudes")
                 lon = eccodes.codes_get_array(g, "longitudes")
                 out["lat"] = lat
                 out["lon"] = np.where(lon > 180, lon - 360, lon)
         finally:
             eccodes.codes_release(g)
-        v = np.where(np.isclose(vals, miss), np.nan, vals.astype(float))
+        v = np.where(vals == miss, np.nan, vals.astype(float))
         out[key] = v - 273.15 if key[0] == "TMP" else v
     return out
 

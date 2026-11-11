@@ -2,6 +2,9 @@ from datetime import datetime, timezone
 
 import numpy as np
 import eccodes
+import pytest
+
+import hrrr.fog
 
 from hrrr.fog import (fog_ranges, grid_keys, FOG_FIELDS, prs_url, lcc_params, lcc_ij, sample_bilinear,
                       read_fog_fields)
@@ -70,7 +73,8 @@ def _msg(values, missing=False):
     return b
 
 
-def test_read_fog_fields_units():
+def test_read_fog_fields_units(monkeypatch):
+    monkeypatch.setattr(hrrr.fog, "grid_keys", lambda h: dict(KEYS, Nx=2, Ny=2))
     run = datetime(2026, 11, 10, 12, tzinfo=timezone.utc)
     url = prs_url(run, 3)
     miss = 9999.0
@@ -101,7 +105,8 @@ def test_read_fog_fields_units():
     assert np.isnan(rh[0]) and np.allclose(rh[1:], [50.0, 60.0, 70.0], atol=1e-3)
     assert np.allclose(out[("HGT", "surface")], [1, 2, 3, 4], atol=1e-3)
     assert sorted(out["lon"].tolist()) == [-110.0, -110.0, -109.0, -109.0]
-    assert len(out) == 29
+    assert len(out) == 32
+    assert out["Nx"] == 2 and out["Ny"] == 2 and out["grid"]["LoVInDegrees"] == 262.5
 
 
 def test_fog_ranges_bounds_and_missing():
@@ -109,24 +114,14 @@ def test_fog_ranges_bounds_and_missing():
     r = fog_ranges("\n".join(lines) + "\n", 0)
     assert r[FOG_FIELDS[0]] == (100, 199)
     assert r[FOG_FIELDS[-1]] == (2700, None)
-    try:
+    with pytest.raises(KeyError):
         fog_ranges("\n".join(lines[:-1]) + "\n", 0)
-        assert False
-    except KeyError:
-        pass
-    try:
+    with pytest.raises(KeyError):
         fog_ranges("\n".join(lines) + "\n", 3)  # wrong hour label
-        assert False
-    except KeyError:
-        pass
 
 
-def test_grid_keys_reads_lcc_message(monkeypatch=None):
-    real = eccodes.codes_get
-    eccodes.codes_get = lambda h, key: KEYS[key]
-    try:
-        k = grid_keys(object())
-    finally:
-        eccodes.codes_get = real
+def test_grid_keys_reads_lcc_message(monkeypatch):
+    monkeypatch.setattr(eccodes, "codes_get", lambda h, key: KEYS[key])
+    k = grid_keys(object())
     assert k == KEYS
     assert lcc_params(k)["nx"] == 1799

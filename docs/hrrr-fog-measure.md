@@ -44,6 +44,8 @@ sample is mountain-biased low on the eastern tiles, so a lowland place would be 
 
 Constants as measured: `FOG_SPACING_MDEG = 25`, `FOG_TILE_DEG = 1`, `FOG_BLOCK_HOURS = (undecided; 6 is the only near-miss)`.
 
+**Decision (2026-11-11):** Erik kept 25 mdeg (`FOG_SPACING_MDEG = 25`, `FOG_TILE_DEG = 1`) despite 2.57 MB/day at Bend; controller ruling `FOG_BLOCK_HOURS = 6`.
+
 ## Grid keys for Task 2
 
 First wrfprsf message of f00 (VVEL 50 mb, 2026-11-11 18Z; the grid is identical for every message):

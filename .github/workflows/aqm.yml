@@ -1,14 +1,17 @@
 name: aqm
-# Air quality feed from NOAA's AQM (PM2.5 surface forecast). Hourly: one pass
-# checks whether NOAA has published a newer run than the live manifest and
-# builds it if so. No self-restarting chain (unlike hrrr.yml and tick.yml): a
-# missed hour costs nothing, the next hour's pass catches the run up.
+# Air quality feed from NOAA's AQM (PM2.5 surface forecast). Like hrrr.yml and
+# tick.yml, one run watches for ~5 hours and then starts the next (a workflow
+# may dispatch workflows with its own token); the schedule only restarts the
+# chain if it ever breaks. Why a loop: GitHub started the old hourly cron just
+# 3 times in 24 h on 2026-11-11, and NOAA publishes both AQM cycles together
+# around 18:03 UTC, so the feed sat 34 h stale while every run said "success".
 # Publishes to its own Vercel Blob store (AQ_BASE), never the ICON or HRRR one.
 on:
   schedule:
-    - cron: "41 * * * *"
+    - cron: "53 */4 * * *"
   workflow_dispatch:
 permissions:
+  actions: write
   contents: read
 concurrency:
   group: aqm
@@ -18,7 +21,7 @@ env:
 jobs:
   aqm:
     runs-on: ubuntu-24.04   # pinned: "latest" moves to a new Ubuntu under the build
-    timeout-minutes: 60
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -28,22 +31,36 @@ jobs:
       - uses: actions/setup-node@v5
         with: { node-version: "22" }
       - run: cd publish && npm ci --no-audit --no-fund && node --test
-      - name: build the newest AQM run if the live site lacks it
+      - name: watch NOAA, build each new AQM run
+        id: loop
         env:
           PYTHONUNBUFFERED: "1"
           BLOB_READ_WRITE_TOKEN: ${{ secrets.AQ_BLOB_READ_WRITE_TOKEN }}
         run: |
-          # aqm_build.py: 0 built, 3 nothing new (success, nothing to publish),
-          # anything else failed (the live site stays and this run goes red).
-          set +e
-          timeout -k 10 2400 python aqm_build.py --out site-aqm --live-manifest "$AQ_BASE/manifest.json"
-          rc=$?
-          set -e
-          if [ "$rc" = "0" ]; then
-            (cd publish && node blob.mjs ../site-aqm)
-          elif [ "$rc" = "3" ]; then
-            echo "live site already carries the newest AQM run"
-          else
-            echo "aqm_build.py failed (exit $rc)"
-            exit "$rc"
-          fi
+          # ~5 min setup + 285 min loop + <=40 min build + ~3 min publish + 10 min sleep <= 360
+          end=$(( $(date +%s) + 285 * 60 ))
+          while [ "$(date +%s)" -lt "$end" ]; do
+            # aqm_build.py: 0 built, 3 nothing new, anything else failed. A
+            # failure (or a build killed by the 40 min timeout, exit 124/137) is
+            # retried on the next pass, so it must not end the loop.
+            set +e
+            timeout -k 10 2400 python aqm_build.py --out site-aqm --live-manifest "$AQ_BASE/manifest.json"
+            rc=$?
+            set -e
+            if [ "$rc" = "0" ]; then
+              # A failed publish is retried by the next pass (the live manifest
+              # still names the old run), so it too must not end the loop.
+              (cd publish && node blob.mjs ../site-aqm) || echo "publish failed, will retry"
+            elif [ "$rc" != "3" ]; then
+              echo "aqm_build.py failed (exit $rc), retrying next pass"
+            fi
+            rm -rf site-aqm
+            sleep 600
+          done
+      - name: start the next run
+        # Not after a broken setup step (pip, pytest, npm, node --test): that
+        # would restart a failing run at once; the 4-hourly cron restarts it.
+        if: always() && steps.loop.conclusion != 'skipped'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run aqm.yml --ref main

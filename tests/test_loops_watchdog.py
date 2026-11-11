@@ -35,7 +35,7 @@ def test_covers_every_self_restarting_loop():
         if f"gh workflow run {p.stem}.yml" in p.read_text()
     )
     assert selfloops == sorted(loops_env())
-    assert sorted(loops_env()) == ["aifs", "gfs", "hrrr", "ifs", "rrfs", "tick"]
+    assert sorted(loops_env()) == ["aifs", "aqm", "gfs", "hrrr", "ifs", "rrfs", "tick"]
 
 
 def test_hourly_with_dispatch_permission():

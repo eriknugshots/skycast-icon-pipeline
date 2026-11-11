@@ -2,10 +2,10 @@
 //
 // The feed's blob store holds manifest.json plus one folder per run (tiles/<run>/),
 // per block file set (blocks/<run>/), per tail (tail/<run>/), per column feed
-// (columns/<run>/), per thickness feed (thick/<run>/) and per fog feed (fog/<run>/). A publish keeps the
-// folders the NEW manifest names and the ones the PREVIOUS manifest named — a phone
-// that read the old manifest a moment ago is still fetching its squares — and
-// deletes every other folder.
+// (columns/<run>/), per thickness feed (thick/<run>/) and per fog feed
+// (fog/<run>/). A publish keeps the folders the NEW manifest names and the ones
+// the PREVIOUS manifest named — a phone that read the old manifest a moment ago
+// is still fetching its squares — and deletes every other folder.
 
 /** The folders a manifest points at, each ending in '/'. */
 export function manifestFolders(m) {

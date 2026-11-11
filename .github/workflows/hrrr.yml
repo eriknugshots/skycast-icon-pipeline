@@ -20,7 +20,7 @@ env:
 jobs:
   hrrr:
     runs-on: ubuntu-24.04   # pinned: "latest" moves to a new Ubuntu under the build
-    timeout-minutes: 330
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -36,7 +36,8 @@ jobs:
           PYTHONUNBUFFERED: "1"
           BLOB_READ_WRITE_TOKEN: ${{ secrets.HRRR_BLOB_READ_WRITE_TOKEN }}
         run: |
-          end=$(( $(date +%s) + 5 * 3600 ))
+          # ~5 min setup + 285 min loop + <=62 min last pass <= 360 (the hosted-runner maximum)
+          end=$(( $(date +%s) + 285 * 60 ))
           while [ "$(date +%s)" -lt "$end" ]; do
             # hrrr_build.py: 0 built, 3 nothing new, anything else failed. A
             # failure (or a build killed by the 20 min timeout, exit 124/137) is

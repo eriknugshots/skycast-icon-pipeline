@@ -66,6 +66,16 @@ def field_spec(plevels):
     return out
 
 
+HRRR_PLEVELS = (1000, 975, 950, 925, 900, 850, 800, 700)
+
+
+def field_spec_hrrr():
+    """field_spec's order for HRRR's fog tiles: no T at 80 m, no WW (neither is
+    in wrfprsf). 8 levels x (T, RH, GH), T and RH at 2 m, static HSURF = 27."""
+    return [f for f in field_spec(HRRR_PLEVELS)
+            if not (f[0] == WW or (f[0] == T and f[1] == HEIGHT_AGL_M and f[2] == 80))]
+
+
 def quantize(values, scale, offset):
     """Physical values (NaN = missing) → u16 codes. The scale and offset are
     stored as f32, so the codes are computed with the f32 values a decoder
@@ -134,11 +144,11 @@ def _unplanes(raw, n):
     return np.cumsum(d, dtype=np.uint64).astype(np.uint64) % 65536
 
 
-def encode_columns(sw_lat, sw_lon, stride, step_hours, spec, steps_codes, static_codes):
-    """steps_codes: u16 [steps][dynamic fields][side][side] — every field of
+def encode_columns_grid(sw_lat, sw_lon, spacing_mdeg, n, step_hours, spec, steps_codes, static_codes):
+    """The encoder for any n x n lattice: spacing_mdeg is the node spacing in
+    milli-degrees. steps_codes: u16 [steps][dynamic fields][side][side] — every field of
     `spec` but the static ones, in spec order. static_codes: u16 [static
     fields][side][side]. step_hours: ascending unix hours."""
-    n = side(stride)
     steps_codes = np.asarray(steps_codes)
     static_codes = np.asarray(static_codes)
     dyn = [f for f in spec if f[1] != STATIC]
@@ -160,11 +170,18 @@ def encode_columns(sw_lat, sw_lon, stride, step_hours, spec, steps_codes, static
             # [steps][rows][cols] → [rows][cols][steps]: a node's hours together.
             parts.append(np.moveaxis(steps_codes[:, di], 0, -1).reshape(-1)); di += 1
     body = np.concatenate(parts) if parts else np.zeros(0, np.uint16)
-    head = _HEADER.pack(MAGIC, int(sw_lat), int(sw_lon), int(round(spacing_deg(stride) * 1000)),
+    head = _HEADER.pack(MAGIC, int(sw_lat), int(sw_lon), int(spacing_mdeg),
                         n, n, len(hours), len(spec))
     times = struct.pack(f"<{len(hours)}I", *hours)
     table = b"".join(_FIELD.pack(k, lt, lv, sc, off) for k, lt, lv, sc, off in spec)
     return head + times + table + zlib.compress(_planes(body), ZLIB_LEVEL)
+
+
+def encode_columns(sw_lat, sw_lon, stride, step_hours, spec, steps_codes, static_codes):
+    """A 5-degree square on the world grid: encode_columns_grid at stride's
+    spacing. steps_codes / static_codes as there, n = side(stride)."""
+    return encode_columns_grid(sw_lat, sw_lon, int(round(spacing_deg(stride) * 1000)), side(stride),
+                               step_hours, spec, steps_codes, static_codes)
 
 
 def header_bytes(steps, fields):

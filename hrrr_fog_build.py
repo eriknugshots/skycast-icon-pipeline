@@ -22,12 +22,23 @@ def _now():
     return dt.datetime.now(dt.timezone.utc)
 
 
-def _get(url, rng=None):
+def _get(url, rng=None, opener=urllib.request.urlopen):
+    """A short-but-200 body (a proxy truncating) raises so the retry wrapper retries it."""
     headers = {}
     if rng:
         headers["Range"] = f"bytes={rng[0]}-{'' if rng[1] is None else rng[1]}"
-    with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=120) as r:
-        return r.read()
+    with opener(urllib.request.Request(url, headers=headers), timeout=120) as r:
+        body = r.read()
+        want = None
+        if rng and rng[1] is not None:
+            want = rng[1] - rng[0] + 1
+        else:
+            cl = r.headers.get("Content-Length") if getattr(r, "headers", None) else None
+            if cl is not None:
+                want = int(cl)
+    if want is not None and len(body) != want:
+        raise IOError(f"short read from {url}: {len(body)} of {want} bytes")
+    return body
 
 
 def _fetch_json(url):
@@ -81,7 +92,7 @@ def main(argv=None, fetch_json=_fetch_json, get=_get, now=_now, sleep=time.sleep
         (out / "manifest.json").write_text(json.dumps(manifest, separators=(",", ":")))
         files = [f for f in (out / "fog").rglob("*") if f.is_file()]
         size = sum(f.stat().st_size for f in files)
-        print(f"built fog {iso}: {entry.get('tiles')} tiles, {len(files)} files, "
+        print(f"built fog {iso}: {len(entry['tileNames'])} tiles, {len(files)} files, "
               f"{size / 1e6:.1f} MB, {time.monotonic() - t0:.0f} s")
         return BUILT
     except Exception as e:

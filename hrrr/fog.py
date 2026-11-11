@@ -46,7 +46,8 @@ def fog_ranges(idx_text, fh):
 
 def read_fog_fields(run, fh, get):
     """{"lat", "lon", (name, level): ndarray} for one forecast hour. lon in -180..180,
-    T in deg C, RH %, HGT m; NaN where missing. get(url, rng=None) -> bytes is injected."""
+    T in deg C, RH %, HGT m; NaN where missing. Also "Nx", "Ny" (ints) and "grid"
+    (a dict): NOT arrays, so callers iterating values must skip them. get(url, rng=None) -> bytes is injected."""
     url = prs_url(run, fh)
     ranges = fog_ranges(get(url + ".idx").decode(), fh)
     out = {}

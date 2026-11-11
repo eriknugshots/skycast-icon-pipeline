@@ -125,3 +125,33 @@ def test_grid_keys_reads_lcc_message(monkeypatch):
     k = grid_keys(object())
     assert k == KEYS
     assert lcc_params(k)["nx"] == 1799
+
+
+def test_flat_order_is_row_major_south_west_first(monkeypatch):
+    """Header contract: n = j*Nx + i, i fastest, first point SW (reshape(Ny, Nx))."""
+    monkeypatch.setattr(hrrr.fog, "grid_keys", lambda h: dict(KEYS, Nx=3, Ny=2))
+    run = datetime(2026, 11, 10, 12, tzinfo=timezone.utc)
+    url = prs_url(run, 0)
+
+    h = eccodes.codes_grib_new_from_samples("regular_ll_sfc_grib2")
+    for k, x in (("Ni", 3), ("Nj", 2), ("jScansPositively", 1),
+                 ("latitudeOfFirstGridPointInDegrees", 40.0),
+                 ("latitudeOfLastGridPointInDegrees", 41.0),
+                 ("longitudeOfFirstGridPointInDegrees", 250.0),
+                 ("longitudeOfLastGridPointInDegrees", 252.0),
+                 ("iDirectionIncrementInDegrees", 1.0), ("jDirectionIncrementInDegrees", 1.0)):
+        eccodes.codes_set(h, k, x)
+    eccodes.codes_set_values(h, np.arange(6.0))
+    m = eccodes.codes_get_message(h)
+    eccodes.codes_release(h)
+    lines = [f"{n}:{n * 10}:d=2026111012:{k[0]}:{k[1]}:anl:" for n, k in enumerate(FOG_FIELDS, 1)]
+    ranges = fog_ranges("\n".join(lines) + "\n", 0)
+
+    def get(u, rng=None):
+        return ("\n".join(lines) + "\n").encode() if u.endswith(".idx") else m
+
+    out = read_fog_fields(run, 0, get)
+    lat, lon = out["lat"].reshape(2, 3), out["lon"].reshape(2, 3)
+    assert (lat[0, 0], lon[0, 0]) == (40.0, -110.0)  # south-west corner
+    assert (lat[0, 1], lon[0, 1]) == (40.0, -109.0)  # one step east
+    assert lat[1, 0] == 41.0                          # one step north

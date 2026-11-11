@@ -35,16 +35,17 @@ Day cost = 9 tiles x bytes(tile, block) x (ceil(24/B) + 1) blocks.
 | 12 | 114.3 | 3 | 3.09 MB |
 | 24 | 228.7 | 2 | 4.12 MB |
 
-## Choice
+## Choice (history: the original stop note, superseded by the Decision below)
 
 Rule: the largest B in {24, 12, 6} with a one-day place cost <= 2.5 MB. **None qualifies:** even B = 6 is 2.57 MB at 25 mdeg
-(3 % over). Per the brief this is a STOP: resolution (or the budget) is Erik's call. No constants chosen.
+(3 % over). Per the brief this is a STOP: resolution (or the budget) is Erik's call. (No constants were chosen at measurement time.)
 Candidates: accept B = 6 at 2.57 MB; coarsen the spacing (e.g. 30 mdeg would be about 1.8 MB at B = 6); or note the Bend
 sample is mountain-biased low on the eastern tiles, so a lowland place would be above 2.57 MB, not below.
 
-Constants as measured: `FOG_SPACING_MDEG = 25`, `FOG_TILE_DEG = 1`, `FOG_BLOCK_HOURS = (undecided; 6 is the only near-miss)`.
+## Decision (final, 2026-11-11)
 
-**Decision (2026-11-11):** Erik kept 25 mdeg (`FOG_SPACING_MDEG = 25`, `FOG_TILE_DEG = 1`) despite 2.57 MB/day at Bend; controller ruling `FOG_BLOCK_HOURS = 6`.
+- `FOG_SPACING_MDEG = 25` and `FOG_TILE_DEG = 1`: Erik, 2026-11-11. He kept the full 3 km detail after seeing 2.57 MB/day at Bend (about 4 MB for a lowland place).
+- `FOG_BLOCK_HOURS = 6`: controller ruling, 2026-11-11 (the smallest per-day download of the measured options).
 
 ## Grid keys for Task 2
 

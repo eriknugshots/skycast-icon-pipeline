@@ -145,7 +145,6 @@ def test_flat_order_is_row_major_south_west_first(monkeypatch):
     m = eccodes.codes_get_message(h)
     eccodes.codes_release(h)
     lines = [f"{n}:{n * 10}:d=2026111012:{k[0]}:{k[1]}:anl:" for n, k in enumerate(FOG_FIELDS, 1)]
-    ranges = fog_ranges("\n".join(lines) + "\n", 0)
 
     def get(u, rng=None):
         return ("\n".join(lines) + "\n").encode() if u.endswith(".idx") else m

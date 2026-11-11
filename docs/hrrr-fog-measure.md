@@ -44,7 +44,7 @@ sample is mountain-biased low on the eastern tiles, so a lowland place would be 
 
 ## Decision (final, 2026-11-11)
 
-- `FOG_SPACING_MDEG = 25` and `FOG_TILE_DEG = 1`: Erik, 2026-11-11. He kept the full 3 km detail after seeing 2.57 MB/day at Bend (about 4 MB for a lowland place).
+- `FOG_SPACING_MDEG = 25` and `FOG_TILE_DEG = 1`: Erik, 2026-11-11. He kept the full 3 km detail after seeing 2.57 MB/day at Bend (a lowland place is estimated nearer 4 MB, extrapolated from the two west Bend tiles at about 58 kB per 4 steps against the 38 kB four-tile mean; not measured).
 - `FOG_BLOCK_HOURS = 6`: controller ruling, 2026-11-11 (the smallest per-day download of the measured options).
 
 ## Grid keys for Task 2

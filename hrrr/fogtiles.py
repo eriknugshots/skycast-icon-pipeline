@@ -46,6 +46,8 @@ def build_fog(run, out_dir, get, steps):
     `fog` entry. steps: the forecast hours of the run (a list) or their count
     (hours 0..steps-1). Memory is one block of tiles at a time."""
     fhs = list(range(steps)) if isinstance(steps, int) else [int(f) for f in steps]
+    if not fhs or any(b <= a for a, b in zip(fhs, fhs[1:])):
+        raise ValueError(f"steps must be non-empty and strictly ascending, got {steps!r}")
     out_dir = Path(out_dir)
     base_hour = int(run.timestamp() // 3600)
 
@@ -82,15 +84,15 @@ def build_fog(run, out_dir, get, steps):
 
     static = quantize(_sample(first, ("HGT", "surface"), ny, nx, fi, fj),
                       sta_spec[0][3], sta_spec[0][4])[:, None]             # [tiles][1][n][n]
+    codes0 = codes_for(first)
+    del first   # the raw step-0 fields are 27 x 1.9 M floats; keep only the codes
 
     root = out_dir / fog_path(run)
     for k0 in range(0, len(fhs), FOG_BLOCK_HOURS):
         block = fhs[k0:k0 + FOG_BLOCK_HOURS]
-        per_step = []
-        for fh in block:
-            f = first if fh == fhs[0] else read_fog_fields(run, fh, get)
-            per_step.append(codes_for(f))
-        cube = np.stack(per_step, axis=1)                                  # [tiles][steps][fields][n][n]
+        cube = np.empty((len(names), len(block)) + codes0.shape[1:], np.uint16)   # [tiles][steps][fields][n][n]
+        for s_i, fh in enumerate(block):
+            cube[:, s_i] = codes0 if fh == fhs[0] else codes_for(read_fog_fields(run, fh, get))
         hours = [base_hour + fh for fh in block]
         k = k0 // FOG_BLOCK_HOURS
         for t, name in enumerate(names):

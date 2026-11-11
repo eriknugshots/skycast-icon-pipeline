@@ -65,13 +65,20 @@ def test_build_fog_writes_blocks(patched, tmp_path):
 
 
 def test_build_fog_values(patched, tmp_path):
+    from hrrr.fog import lcc_params, lcc_ij
+    from pipeline.columns import dequantize
     ft.build_fog(RUN, tmp_path, None, 2)
     d = decode_columns((tmp_path / "fog/2026111012/N44W122/0.icc").read_bytes())
-    from pipeline.columns import dequantize
-    t = dequantize(d["fields"][0], d["spec"][0][3], d["spec"][0][4])
-    # TMP 1000 mb at step 1 is 10 + 0.01 i + 0.02 j + 1: always above 11, below 15
-    assert np.all((t[:, :, 1] > 11) & (t[:, :, 1] < 15))
-    assert np.allclose(t[:, :, 1] - t[:, :, 0], 1.0, atol=0.11)
+    t = dequantize(d["fields"][0], d["spec"][0][3], d["spec"][0][4])   # [row][col][step]
+    lat, lon = ft.tile_nodes(44, -122)
+    fi, fj = lcc_ij(lat, lon, lcc_params(GRID))
+    # TMP 1000 mb is field 0: 10 + 0.01 i + 0.02 j + fh. Rows are latitude (south
+    # first), columns longitude (west first); a swapped axis moves these nodes.
+    for r, c in ((0, 40), (40, 0), (0, 0), (40, 40), (13, 27)):
+        for step in (0, 1):
+            want = 10 + 0.01 * fi[r, c] + 0.02 * fj[r, c] + step
+            assert abs(t[r, c, step] - want) < 0.06, (r, c, step)
+    assert abs(fi[0, 40] - fi[40, 0]) > 20   # the two corners really differ
 
 
 def test_build_fog_entry(patched, tmp_path):
@@ -83,3 +90,10 @@ def test_build_fog_entry(patched, tmp_path):
     assert entry["tileDeg"] == 1 and entry["spacingMdeg"] == 25
     assert len(entry["stepsMs"]) == 8
     assert entry["stepsMs"][1] - entry["stepsMs"][0] == 3600_000
+
+
+@pytest.mark.parametrize("steps", [0, [], [3, 3], [2, 1]])
+def test_build_fog_rejects_bad_steps(patched, tmp_path, steps):
+    with pytest.raises(ValueError):
+        ft.build_fog(RUN, tmp_path, None, steps)
+    assert not (tmp_path / "fog").exists()

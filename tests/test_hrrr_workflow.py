@@ -12,6 +12,8 @@ ROOT = Path(__file__).resolve().parent.parent
 BUILD_RCS = [3, 0, 3, 1, 0]   # 0 = built, 3 = nothing to do, else the build failed
 BUILD = "hrrr_build.py --out site-hrrr --live-manifest https://blob.example/manifest.json"
 PUBLISH = "node blob.mjs ../site-hrrr"
+FOG_RCS = [0, 3, 1, 0, 3]   # the fog build's exit code on each pass that runs it (cloud rc 0 or 3)
+FOG_BUILD = "hrrr_fog_build.py --out site-hrrr-fog --live-manifest https://blob.example/manifest.json"
 
 
 def loop_script():
@@ -28,13 +30,19 @@ def loop_script():
 
 
 def expected_events():
-    events, clock, end, n = [], 0, 5 * 3600, 0
+    events, clock, end, n, f = [], 0, 5 * 3600, 0, 0
     while clock < end:
         rc = BUILD_RCS[n] if n < len(BUILD_RCS) else 3
         n += 1
         events.append(f"build {rc}")
         if rc == 0:
             events.append("publish")
+        if rc in (0, 3):   # the fog build follows the cloud build on built and on nothing-new
+            frc = FOG_RCS[f] if f < len(FOG_RCS) else 3
+            f += 1
+            events.append(f"fogbuild {frc}")
+            if frc == 0:
+                events.append("fogpublish")
         events.append("sleep 300")
         clock += 300
     return events
@@ -51,6 +59,7 @@ def test_loop_publishes_only_on_built(tmp_path):
     (tmp_path / "clock").write_text("0\n")
     (tmp_path / "n").write_text("0\n")
     (tmp_path / "rcs").write_text("\n".join(map(str, BUILD_RCS)) + "\n")
+    (tmp_path / "fogrcs").write_text("\n".join(map(str, FOG_RCS)) + "\n")
     (tmp_path / "publish").mkdir()
     _stub(bin_ / "python", textwrap.dedent("""\
         if [ "$1" = "hrrr_build.py" ]; then
@@ -60,11 +69,26 @@ def test_loop_publishes_only_on_built(tmp_path):
           if [ "$rc" = "0" ]; then mkdir -p site-hrrr; fi
           echo "build $rc" >> "$T/events"; exit "$rc"
         fi
+        if [ "$1" = "hrrr_fog_build.py" ]; then
+          shift; echo "$*" > "$T/fog_args"
+          n=$(cat "$T/fn" 2>/dev/null || echo 0); echo $((n + 1)) > "$T/fn"
+          rc=$(sed -n "$((n + 1))p" "$T/fogrcs"); rc=${rc:-3}
+          # a built run leaves a folder; a rc 3 may leave stray files (the live run moved)
+          if [ "$rc" = "0" ] || [ "$rc" = "3" ]; then mkdir -p site-hrrr-fog; fi
+          echo "fogbuild $rc" >> "$T/events"; exit "$rc"
+        fi
         exit 99
         """))
     _stub(bin_ / "node", textwrap.dedent("""\
-        echo "publish" >> "$T/events"
         echo "$* token=${BLOB_READ_WRITE_TOKEN:-}" >> "$T/node_args"
+        if [ "$2" = "../site-hrrr-fog" ]; then
+          echo "fogpublish" >> "$T/events"
+          test -d ../site-hrrr-fog || exit 98
+          n=$(cat "$T/fnode_n" 2>/dev/null || echo 0); echo $((n + 1)) > "$T/fnode_n"
+          [ "$n" = "0" ] && exit 1   # the first fog publish fails
+          exit 0
+        fi
+        echo "publish" >> "$T/events"
         test -d ../site-hrrr || exit 98
         n=$(cat "$T/node_n" 2>/dev/null || echo 0); echo $((n + 1)) > "$T/node_n"
         [ "$n" = "0" ] && exit 1   # the first publish fails
@@ -86,7 +110,11 @@ def test_loop_publishes_only_on_built(tmp_path):
     assert events == expected_events()   # the failed first publish did not stop the loop
     assert "publish failed, will retry" in p.stdout
     assert (tmp_path / "build_args").read_text().strip() == "--out site-hrrr --live-manifest https://blob.example/manifest.json"
-    assert set((tmp_path / "node_args").read_text().splitlines()) == {"blob.mjs ../site-hrrr token=tok"}
+    assert "fog publish failed, will retry" in p.stdout
+    assert (tmp_path / "fog_args").read_text().strip() == "--out site-hrrr-fog --live-manifest https://blob.example/manifest.json"
+    assert set((tmp_path / "node_args").read_text().splitlines()) == {
+        "blob.mjs ../site-hrrr token=tok", "blob.mjs ../site-hrrr-fog token=tok"}
+    assert not (tmp_path / "site-hrrr-fog").exists()   # removed after every attempt, whatever the rc
     assert not (tmp_path / "site-hrrr").exists()   # removed after the last publish pass or never left behind
 
 
@@ -97,5 +125,7 @@ def test_workflow_text_pins():
     assert "secrets.HRRR_BLOB_READ_WRITE_TOKEN" in text
     assert "secrets.BLOB_READ_WRITE_TOKEN" not in text
     assert "timeout -k 10 1200 python hrrr_build.py" in text
+    assert "timeout -k 10 1800 python hrrr_fog_build.py --out site-hrrr-fog" in text
+    assert text.index("timeout -k 10 1200 python hrrr_build.py") < text.index("hrrr_fog_build.py")
     redispatch = text.split("name: start the next run")[1]
     assert "steps.loop.conclusion != 'skipped'" in redispatch.split("run:")[0]

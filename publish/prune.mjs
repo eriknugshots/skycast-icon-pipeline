@@ -2,7 +2,7 @@
 //
 // The feed's blob store holds manifest.json plus one folder per run (tiles/<run>/),
 // per block file set (blocks/<run>/), per tail (tail/<run>/), per column feed
-// (columns/<run>/) and per thickness feed (thick/<run>/). A publish keeps the
+// (columns/<run>/), per thickness feed (thick/<run>/) and per fog feed (fog/<run>/). A publish keeps the
 // folders the NEW manifest names and the ones the PREVIOUS manifest named — a phone
 // that read the old manifest a moment ago is still fetching its squares — and
 // deletes every other folder.
@@ -14,7 +14,7 @@ export function manifestFolders(m) {
   for (const k of ['tiles', 'blocks']) {
     if (m && typeof m[k] === 'string' && m[k]) out.push(m[k].replace(/\/?$/, '/'));
   }
-  for (const k of ['tail', 'columns', 'thick']) {
+  for (const k of ['tail', 'columns', 'thick', 'fog']) {
     if (m && m[k] && typeof m[k].tiles === 'string' && m[k].tiles) out.push(m[k].tiles.replace(/\/?$/, '/'));
   }
   return out;

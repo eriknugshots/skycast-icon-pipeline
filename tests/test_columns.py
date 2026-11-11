@@ -167,3 +167,22 @@ def test_square_nodes_are_every_stride_th_cloud_sample(stride):
     assert cols[-1] == 0                                   # 180° E wraps to the grid's column 0
     assert len(rows) == len(cols) == side(stride) == (SIDE - 1) // stride + 1
     assert spacing_deg(stride) == stride * DEG
+
+
+def test_encode_columns_grid_matches_encode_columns():
+    spec, dyn, sta = _codes(steps=3, stride=4)
+    hours = [496_000, 496_001, 496_003]
+    assert encode_columns(40, -125, 4, hours, spec, dyn, sta) == \
+        columns.encode_columns_grid(40, -125, 500, 11, hours, spec, dyn, sta)
+    spec, dyn, sta = _codes(steps=2, stride=2, seed=5)
+    assert encode_columns(40, -125, 2, [7, 9], spec, dyn, sta) == \
+        columns.encode_columns_grid(40, -125, 250, 21, [7, 9], spec, dyn, sta)
+
+
+def test_field_spec_hrrr():
+    spec = columns.field_spec_hrrr()
+    assert len(spec) == 27
+    assert all(f[2] != 80 for f in spec)
+    assert all(f[0] != columns.WW for f in spec)
+    assert spec[-1][:2] == (columns.HSURF, STATIC)
+    assert [f[2] for f in spec[:3]] == [1000, 1000, 1000]

@@ -100,3 +100,11 @@ test('summarize: files and bytes by family and by run', () => {
   assert.deepEqual(s.families, [['.', { files: 1, bytes: 2 }], ['tail', { files: 1, bytes: 100 }], ['tiles', { files: 3, bytes: 16 }]]);
   assert.deepEqual(s.runs, [['tail/A', { files: 1, bytes: 100 }], ['tiles/A', { files: 2, bytes: 15 }], ['tiles/B', { files: 1, bytes: 1 }]]);
 });
+
+test('fog folders are named by the manifest and kept for current and previous', () => {
+  assert.deepEqual(manifestFolders({ fog: { tiles: 'fog/2026111012' } }), ['fog/2026111012/']);
+  const c = { tiles: 'tiles/B', fog: { tiles: 'fog/B' } }, p = { tiles: 'tiles/A', fog: { tiles: 'fog/A' } };
+  const paths = ['manifest.json', 'fog/B/N44W122/0.icc', 'fog/A/N44W122/0.icc', 'fog/Z/N44W122/0.icc'];
+  assert.deepEqual(pathsToDelete(paths, { current: c, previous: p }), ['fog/Z/N44W122/0.icc']);
+  assert.deepEqual(pathsToDelete(['fog/A/N44W122/0.icc'], { current: { tiles: 'tiles/B', fog: { tiles: 'fog/B' } }, previous: { fog: { tiles: 'fog/A' } } }), []);
+});

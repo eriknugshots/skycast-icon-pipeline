@@ -54,6 +54,23 @@ jobs:
               echo "hrrr_build.py failed (exit $rc), retrying next pass"
               rm -rf site-hrrr
             fi
+            # The 3 km fog columns ride on the cloud run the live manifest now
+            # names, so they follow a cloud build that built (0) or found
+            # nothing new (3: retries a fog build that failed or lost the race).
+            # hrrr_fog_build.py: 0 built, 3 nothing to do or the live run moved
+            # mid-build (stray files, no manifest), else failed. Publish only on 0.
+            if [ "$rc" = "0" ] || [ "$rc" = "3" ]; then
+              set +e
+              timeout -k 10 1800 python hrrr_fog_build.py --out site-hrrr-fog --live-manifest "$HRRR_BASE/manifest.json"
+              frc=$?
+              set -e
+              if [ "$frc" = "0" ]; then
+                (cd publish && node blob.mjs ../site-hrrr-fog) || echo "fog publish failed, will retry"
+              elif [ "$frc" != "3" ]; then
+                echo "hrrr_fog_build.py failed (exit $frc), retrying next pass"
+              fi
+              rm -rf site-hrrr-fog
+            fi
             sleep 300
           done
       - name: start the next run

@@ -51,3 +51,7 @@ SkyCast alerts server's health route and emails (Resend) when it goes down or
 recovers — `alerts_watchdog.py`, in the background and time-boxed so it can
 never fail or delay the tick. Its key, the repo secret `RESEND_ALERTS_KEY`, is
 a send-only key made by `tools/watchdog-key-setup.sh`.
+
+## HRRR fog columns
+
+`hrrr_fog_build.py` writes 3 km fog columns next to the cloud feed: `fog/<run>/<tile>/<k>.icc` (format ICC1, 1 degree tiles, 41 x 41 nodes at 0.025 degrees, one file per 6-hour block `k`). The published manifest is the cloud manifest plus a `fog` key naming the run folder, and `publish/prune.mjs` keeps `fog/<run>/` for the current and previous manifests. The fog step runs in `hrrr.yml` after the cloud build and its publish, with its own 30 minute timeout; the cloud build is unchanged.

@@ -4,7 +4,7 @@
 // whose hard 1 GB cap is why the feed once left the open ocean out. Pages stays
 // published too: builds already on testers' phones read it.
 //
-// Order matters. The run's folders (tiles, blocks, tail, columns and thick, each
+// Order matters. The run's folders (tiles, blocks, tail, columns, thick and fog, each
 // <folder>/<run>/ — the ones a manifest names; prune.mjs is the source of truth)
 // are uploaded first — their paths never change, so they are cached for a year — and
 // manifest.json LAST, cached 60 s, so no phone ever reads a manifest whose

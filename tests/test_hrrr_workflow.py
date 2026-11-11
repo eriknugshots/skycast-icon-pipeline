@@ -1,6 +1,6 @@
 # The HRRR loop in .github/workflows/hrrr.yml, run for real under bash with
 # python, node, sleep and date stubbed (fake clock): a publish follows a build
-# that exited 0 and nothing else; every pass sleeps 300 s; the loop ends at 5 h.
+# that exited 0 and nothing else; every pass sleeps 300 s; the loop ends at 285 min.
 import os
 import shutil
 import stat
@@ -30,7 +30,7 @@ def loop_script():
 
 
 def expected_events():
-    events, clock, end, n, f = [], 0, 5 * 3600, 0, 0
+    events, clock, end, n, f = [], 0, 285 * 60, 0, 0
     while clock < end:
         rc = BUILD_RCS[n] if n < len(BUILD_RCS) else 3
         n += 1
@@ -120,6 +120,9 @@ def test_loop_publishes_only_on_built(tmp_path):
 
 def test_workflow_text_pins():
     text = (ROOT / ".github/workflows/hrrr.yml").read_text()
+    assert "timeout-minutes: 360" in text
+    assert "$(date +%s) + 285 * 60 ))" in text
+    assert "5 * 3600" not in text
     assert "cancel-in-progress: false" in text
     assert "actions: write" in text
     assert "secrets.HRRR_BLOB_READ_WRITE_TOKEN" in text

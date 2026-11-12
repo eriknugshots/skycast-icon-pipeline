@@ -4,6 +4,9 @@
 # live manifest unchanged + "fog": entry. Exit codes: 0 built, 3 nothing to do
 # (live already carries fog for its run, or the live run moved while building),
 # 1 failed (the live site stays).
+# --still-live DIR: is DIR's built fog manifest still for the live run? 0 yes,
+# 3 the live run moved since it was built (discard it), 1 failed. hrrr.yml runs
+# the build in the background and checks this right before publishing it.
 import argparse
 import datetime as dt
 import json
@@ -68,11 +71,20 @@ def main(argv=None, fetch_json=_fetch_json, get=_get, now=_now, sleep=time.sleep
     p = argparse.ArgumentParser()
     p.add_argument("--out", default="site-hrrr-fog")
     p.add_argument("--live-manifest", required=False)
+    p.add_argument("--still-live", metavar="DIR")
     a = p.parse_args(argv)
     try:
         if not a.live_manifest:
             print("FAILED: --live-manifest is required")
             return FAILED
+        if a.still_live:
+            built = json.loads((Path(a.still_live) / "manifest.json").read_text())["run"]
+            now_live = fetch_json(a.live_manifest).get("run")
+            if now_live != built:
+                print(f"fog was built for {built} but the live run is now {now_live}")
+                return NOTHING_TO_DO
+            print(f"fog for {built} is still for the live run")
+            return BUILT
         t0 = time.monotonic()
         live = fetch_json(a.live_manifest)
         iso = live["run"]

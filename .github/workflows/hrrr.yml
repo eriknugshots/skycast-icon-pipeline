@@ -36,9 +36,42 @@ jobs:
           PYTHONUNBUFFERED: "1"
           BLOB_READ_WRITE_TOKEN: ${{ secrets.HRRR_BLOB_READ_WRITE_TOKEN }}
         run: |
-          # ~5 min setup + 285 min loop + <=62 min last pass <= 360 (the hosted-runner maximum)
+          # The 3 km fog columns build in the BACKGROUND (up to 30 min), so they
+          # never hold up the next cloud check: a pass is a finished fog build's
+          # publish (a few min) + cloud build <=20 + its publish + 5 min sleep,
+          # about 32 min at most. All publishes run here in the foreground, one
+          # at a time, so a fog manifest never races a cloud manifest.
+          # ~5 min setup + 285 min loop + <=32 min last pass, then a running fog
+          # build is waited for until 320 min (else stopped; the next run rebuilds
+          # it) + its publish + the next-run step <= 360 (the hosted-runner maximum)
           end=$(( $(date +%s) + 285 * 60 ))
+          drain=$(( end + 35 * 60 ))
+          fogpid=""
+          # A finished background fog build (fog.rc holds its exit code). Publish
+          # only a build that built (0) AND is still for the live run: a cloud
+          # publish since it finished would make it a stale manifest.
+          fog_collect() {
+            wait "$fogpid" || true
+            fogpid=""
+            frc=$(cat fog.rc)
+            cat fog.log || true
+            if [ "$frc" = "0" ]; then
+              set +e
+              python hrrr_fog_build.py --still-live site-hrrr-fog --live-manifest "$HRRR_BASE/manifest.json"
+              lrc=$?
+              set -e
+              if [ "$lrc" = "0" ]; then
+                (cd publish && node blob.mjs ../site-hrrr-fog) || echo "fog publish failed, will retry"
+              else
+                echo "fog build is not for the live run any more (check exit $lrc), discarded; rebuilt next pass"
+              fi
+            elif [ "$frc" != "3" ]; then
+              echo "hrrr_fog_build.py failed (exit $frc), retrying next pass"
+            fi
+            rm -rf site-hrrr-fog fog.rc fog.log fog.pid
+          }
           while [ "$(date +%s)" -lt "$end" ]; do
+            if [ -n "$fogpid" ] && [ -f fog.rc ]; then fog_collect; fi
             # hrrr_build.py: 0 built, 3 nothing new, anything else failed. A
             # failure (or a build killed by the 20 min timeout, exit 124/137) is
             # retried on the next pass, so it must not end the loop.
@@ -56,24 +89,41 @@ jobs:
               rm -rf site-hrrr
             fi
             # The 3 km fog columns ride on the cloud run the live manifest now
-            # names, so they follow a cloud build that built (0) or found
-            # nothing new (3: retries a fog build that failed or lost the race).
-            # hrrr_fog_build.py: 0 built, 3 nothing to do or the live run moved
-            # mid-build (stray files, no manifest), else failed. Publish only on 0.
-            if [ "$rc" = "0" ] || [ "$rc" = "3" ]; then
-              set +e
-              timeout -k 10 1800 python hrrr_fog_build.py --out site-hrrr-fog --live-manifest "$HRRR_BASE/manifest.json"
-              frc=$?
-              set -e
-              if [ "$frc" = "0" ]; then
-                (cd publish && node blob.mjs ../site-hrrr-fog) || echo "fog publish failed, will retry"
-              elif [ "$frc" != "3" ]; then
-                echo "hrrr_fog_build.py failed (exit $frc), retrying next pass"
-              fi
-              rm -rf site-hrrr-fog
+            # names, so a fog build starts after a cloud build that built (0) or
+            # found nothing new (3: retries a fog build that failed or lost the
+            # race), never while one is still running. hrrr_fog_build.py: 0 built,
+            # 3 nothing to do (the live run already has its fog: seconds) or the
+            # live run moved mid-build, else failed; fog_collect publishes only 0.
+            # The subshell writes fog.rc when the build ends and passes a TERM
+            # on to timeout, which stops the build.
+            if { [ "$rc" = "0" ] || [ "$rc" = "3" ]; } && [ -z "$fogpid" ]; then
+              rm -rf site-hrrr-fog fog.rc fog.log fog.pid
+              (
+                trap 'kill -TERM "$tpid" 2>/dev/null' TERM
+                timeout -k 10 1800 python hrrr_fog_build.py --out site-hrrr-fog --live-manifest "$HRRR_BASE/manifest.json" > fog.log 2>&1 &
+                tpid=$!
+                frc=0
+                wait "$tpid" || frc=$?
+                wait "$tpid" 2>/dev/null || true   # after a passed-on TERM: until the build has stopped
+                echo "$frc" > fog.rc.tmp && mv fog.rc.tmp fog.rc
+              ) &
+              fogpid=$!
+              echo "$fogpid" > fog.pid
             fi
             sleep 300
           done
+          # Past the loop: give a running fog build until $drain, then stop it.
+          if [ -n "$fogpid" ]; then
+            while [ ! -f fog.rc ] && [ "$(date +%s)" -lt "$drain" ]; do sleep 30; done
+            if [ -f fog.rc ]; then
+              fog_collect
+            else
+              echo "fog build still running at the time budget, stopped; the next run rebuilds it"
+              kill -TERM "$fogpid" 2>/dev/null || true
+              wait "$fogpid" || true
+              rm -rf site-hrrr-fog fog.rc fog.log fog.pid
+            fi
+          fi
       - name: start the next run
         # Not after a broken setup step (pip, pytest, npm, node --test): that
         # would restart a failing run at once; the 4-hourly cron restarts it.

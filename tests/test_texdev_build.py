@@ -48,10 +48,13 @@ def _upper_value(name, fi_scale=G):
 
 
 def _fake_lattice(fi_scale=G):
-    def lattice_levels(paths, kit, work, stride):
+    def lattice_levels(paths, kit, work, stride, nearest=False):
         shape = columns.lattice(np.zeros((NY, NX), np.uint8), stride).shape
         out = {}
         for p in paths:
+            # WW (categorical) is fetched nearest-link; every other field, the
+            # upper air included, is blended.
+            assert nearest == ("_WW." in Path(p).name), (Path(p).name, nearest)
             got = _upper_value(Path(p).name, fi_scale) or _column_value(Path(p).name)
             out[got[0]] = np.full(shape, got[1], dtype=np.float32)
         return out

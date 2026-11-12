@@ -373,6 +373,83 @@ for the globe) — both replaced (above).
 not publish to the real store; `blob.mjs` now logs files, MB and seconds
 per root on every publish, so the first live build gives the real figure.
 
+## Upper-air and clue files
+
+The cloud-texture feed (SkyCast `docs/superpowers/specs/2026-11-12-cloud-texture-design.md`)
+adds two file families beside the columns. They are built by
+`run_build.build_upper_and_clues`; for now only `texdev_build.py` calls it,
+for the 12 US-West squares (SW corners lat 35/40/45, lon −130/−125/−120/−115),
+writing `texdev/upper/<run>/<sq>.icu`, `texdev/clues/<run>/<sq>.icx` and
+`texdev/manifest.json` (`upper`, `clues`: `{format, run, runMs, steps,
+stepsMs, historySteps, spacing, side, tiles}`; `steps` and `stepsMs` are the
+same unix-ms list). The live build does not call it.
+
+- **ICU1** (`pipeline/columns.py encode_upper`): the ICC1 byte layout under
+  magic `ICU1`. Fields: U, V at 1000–700 hPa (the ICC1 levels — their T/RH/GH
+  stay in ICC1 only, and ICC1 never gets an upper or wind level: the app's fog
+  reads every level of an ICC1 square), then T, RH, GH, U, V at 600, 500, 400,
+  300, 250, 200 hPa, then CAPE_CON, CAPE_ML, HBAS_CON, HTOP_CON (level type 3,
+  SINGLE). 48 fields, every one per step. FI is converted to metres with the
+  columns' g, and the build fails (never clips) unless every GH at 600–200 hPa
+  lies in 3,000–17,000 m.
+- **ICX1** (`pipeline/cluefile.py`): per node per step the 27 clue bytes of
+  `pipeline/clues.py`, computed from the profile ICC1 + ICU1 hold, as their
+  codes decode — so the app computing clues from those two files gets exactly
+  these bytes.
+- History: 60 h of ICU1 under `state/upper` (`history.py`, split heads); the
+  clue history is rebuilt from it and the column history. The lattice is
+  cropped to the squares' bounding window after each remap; heads carry a
+  `window.json`, and a head kept for another window is ignored.
+
+### Size
+
+Measured 2026-11-12 on the ICON 06Z run's 0.25° lattice (steps 0–12, plus
+0/3/6/9/12 against 0–4 for the cost of the 3-hourly steps), the 12 texdev
+squares. 153 steps = 139 hourly (60 history + 0–78) and 14 three-hourly
+(81–120). The lattice on disk had no U/V at 1000–700 hPa, so the ICU1 and
+ICX1 files were measured without them; "+ low wind" are estimates: ICU1 adds
+7 × the bytes of one U+V level pair (the 600–200 hPa U/V re-encoded alone, per
+level — an upper bound, since a stream compressed alone pays its own start-up
+cost and jet-level wind is busier than low-level wind); ICX1's proxy fills the
+low deck's shearDir, shear and wind bytes with the mid deck's and recompresses.
+
+| square | ICU1 B/step (meas.) | U+V B/step per level | ICX1 B/step (meas.) | ICX1 B/step (low-wind proxy) | ICU1@153 meas. KB | ICU1@153 +low wind KB | ICX1@153 meas. KB | ICX1@153 +low wind KB |
+|---|---|---|---|---|---|---|---|---|
+| N35W130 | 13383 | 868 | 8570 | 8869 | 2088 | 3031 | 1320 | 1363 |
+| N35W125 | 10245 | 723 | 6433 | 6852 | 1616 | 2405 | 997 | 1060 |
+| N35W120 | 8888 | 700 | 5179 | 5542 | 1396 | 2163 | 799 | 854 |
+| N35W115 | 8182 | 649 | 4693 | 5059 | 1289 | 2000 | 725 | 780 |
+| N40W130 | 12749 | 852 | 8666 | 9006 | 1978 | 2899 | 1333 | 1382 |
+| N40W125 | 9618 | 723 | 6037 | 6289 | 1498 | 2285 | 929 | 967 |
+| N40W120 | 8495 | 691 | 5196 | 5534 | 1329 | 2083 | 800 | 851 |
+| N40W115 | 8115 | 645 | 5018 | 5348 | 1274 | 1980 | 775 | 824 |
+| N45W130 | 12880 | 856 | 8811 | 9164 | 1995 | 2920 | 1350 | 1403 |
+| N45W125 | 10944 | 797 | 7185 | 7628 | 1695 | 2557 | 1102 | 1168 |
+| N45W120 | 9302 | 729 | 5677 | 6061 | 1448 | 2240 | 874 | 931 |
+| N45W115 | 9230 | 726 | 5183 | 5506 | 1436 | 2225 | 798 | 847 |
+
+- ICU1 measured: mean 1587 KB/square at 153; 12 squares 19.0 MB; world x2592 4.11 GB
+- ICU1 + low wind (est.): mean 2399 KB/square at 153; 12 squares 28.8 MB; world x2592 6.22 GB
+- ICX1 measured: mean 983 KB/square at 153; 12 squares 11.8 MB; world x2592 2.55 GB
+- ICX1 + low wind (est.): mean 1036 KB/square at 153; 12 squares 12.4 MB; world x2592 2.69 GB
+
+World figures are 2592 × the texdev mean, not a measurement; the W130
+(ocean) squares are the largest here. ICX1 is about two thirds of ICU1
+without the low wind: the clues carry wind, shear and lapse per node per
+hour, which compress poorly. Laid out differently (measured on the 13-step
+files, no low wind): byte-plane-major `[27][rows][cols][steps]` ~692 KB per
+square at 153 steps, plus time deltas ~657 KB, against ~978 KB as built —
+still over the 400 KB a square the plan set for a world rollout.
+
+Clues cost about 0.16 ms per node-step in Python, single-threaded: 11 s for
+the 12 squares × 13 steps, about 7 h for the whole lattice at 153 steps.
+
+**OPEN — decide before any world rollout: drop ICX1 (phone derives clues
+from ICC1+ICU1), coarser clue steps, or fewer bytes.** The clue build would
+also need vectorising (or a process pool) and streaming, since uncropped
+upper-air stacks for the world are ~15.2 GB at 153 steps (48 fields × 721 ×
+1440 nodes × 2 B × 153).
+
 ## Pages budget
 
 `SITE_BUDGET_BYTES` (900 MB, under Pages' hard 1 GB) counts the cloud

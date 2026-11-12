@@ -85,10 +85,15 @@ def field_spec_hrrr():
             if not (f[0] == WW or (f[0] == T and f[1] == HEIGHT_AGL_M and f[2] == 80))]
 
 
-def upper_field_spec(plevels, singles=(CAPE_CON, CAPE_ML, HBAS_CON, HTOP_CON)):
-    """The ICU1 field table, in body order: per pressure level (as given) T,
-    RH, GH, U, V; then the single-level fields. Every field is per step."""
+def upper_field_spec(plevels, singles=(CAPE_CON, CAPE_ML, HBAS_CON, HTOP_CON), wind_plevels=()):
+    """The ICU1 field table, in body order: first U, V at each of
+    `wind_plevels` (the ICC1 levels, whose T/RH/GH stay in ICC1 only), then
+    per pressure level of `plevels` (as given) T, RH, GH, U, V; then the
+    single-level fields. Every field is per step."""
     out = []
+    for p in wind_plevels:
+        for k in (U, V):
+            out.append((k, PRESSURE_HPA, int(p)) + _QUANT[k])
     for p in plevels:
         for k in (T, RH, GH, U, V):
             out.append((k, PRESSURE_HPA, int(p)) + _QUANT[k])

@@ -21,7 +21,7 @@ from collections import namedtuple
 from pathlib import Path
 import numpy as np
 
-from pipeline import blocks, columns, dwd, history, live, site, thick
+from pipeline import blocks, cluefile, clues, columns, dwd, history, live, site, thick
 from pipeline.encode import encode_square, quantize, FIELD_COUNT
 from pipeline.regrid import ensure_kit, regrid, lattice_levels, regrid_values
 from pipeline.squares import all_squares, parse_name, slice_square, NX, NY
@@ -680,6 +680,329 @@ def build_columns(blob_dir, state, work, deps, kit, run, steps, names, workers, 
             "stepsMs": [h * 3600 * 1000 for h in hours], "historySteps": len(past),
             "spacing": columns.spacing_deg(stride), "side": columns.side(stride),
             "tiles": site_columns_tiles(run)}
+
+
+# ---- Upper air and texture clues (ICU1 / ICX1, docs/column-feed-design.md) --
+# The cloud-texture feed: T/RH/GH/U/V at dwd.UPPER_PLEVELS plus ICON's four
+# convection singles (ICU1, never inside ICC1 — the app's fog reads every
+# level of an ICC1 square), and per node the 27 clue bytes of pipeline/clues.py
+# (ICX1), computed from the profile ICC1 (1000-700 hPa) + ICU1 (600-200 hPa)
+# carry, as their CODES decode — so a phone computing clues from the two files
+# gets exactly the bytes ICX1 holds. ICU1 also carries U/V at the ICC1 levels
+# (dwd.UPPER_WIND_PLEVELS), so the low deck has wind, shear and shearDir.
+#
+# Built for a list of squares only (texdev_build.py: the US West). The lattice
+# is cropped to the squares' bounding window right after each remap, so 153
+# hours of 34 fields stay small; history heads are kept for that window, with
+# the window recorded beside them (a different window ignores them).
+UPPER_STRIDE = COLUMN_STRIDE
+UPPER_WAIT_S = COLUMN_WAIT_S
+# GH (m) any real 600-200 hPa surface lies in: 600 hPa sits near 3.5-4.6 km,
+# 200 hPa near 10.5-12.7 km. FI left in m² s⁻² (÷ g forgotten) reads ~10x
+# higher and fails here instead of being stored, or clipped, as heights.
+GH_RANGE_M = (3000.0, 17000.0)
+UPPER_SUB = "upper"
+
+
+def site_upper_root():
+    return "upper"
+
+
+def site_clues_root():
+    return "clues"
+
+
+def upper_keys():
+    """The ICU1 fields' keys, in upper_field_spec's (body) order."""
+    keys = []
+    for p in dwd.UPPER_WIND_PLEVELS:
+        keys += [(f, p) for f in dwd.UPPER_WIND_FIELDS]
+    for p in dwd.UPPER_PLEVELS:
+        keys += [(f, p) for f in dwd.UPPER_FIELDS]
+    return keys + [(f, None) for f in dwd.UPPER_SINGLES]
+
+
+def upper_spec():
+    return columns.upper_field_spec(dwd.UPPER_PLEVELS, wind_plevels=dwd.UPPER_WIND_PLEVELS)
+
+
+_SINGLE_KIND = {"CAPE_CON": columns.CAPE_CON, "CAPE_ML": columns.CAPE_ML,
+                "HBAS_CON": columns.HBAS_CON, "HTOP_CON": columns.HTOP_CON}
+
+
+def check_gh(gh, level):
+    """Raise unless every valid GH (m) at `level` hPa lies in GH_RANGE_M."""
+    v = np.asarray(gh)[np.isfinite(gh)]
+    if v.size and (v.min() < GH_RANGE_M[0] or v.max() > GH_RANGE_M[1]):
+        raise ValueError(f"GH at {level} hPa spans {v.min():.0f}-{v.max():.0f} m, outside "
+                         f"{GH_RANGE_M[0]:.0f}-{GH_RANGE_M[1]:.0f} m: FI is not geopotential in m2/s2?")
+
+
+def _upper_to_codes(key, arr):
+    """A physical upper-air lattice field (DWD units) → u16 codes, app units.
+    FI → metres with _to_codes' g, after the range check."""
+    field, lv = key
+    if field == "FI":
+        check_gh(arr / G, lv)
+        return _to_codes(key, arr)
+    if field in ("T", "RELHUM"):
+        return _to_codes(key, arr)
+    kind = {"U": columns.U, "V": columns.V}.get(field) or _SINGLE_KIND[field]
+    return columns.quantize(arr, *columns._QUANT[kind])
+
+
+def square_window(names, stride):
+    """(r0, r1, c0, c1): the lattice rows/columns every square's nodes lie in."""
+    rows, cols = set(), set()
+    for name in names:
+        r, c = columns.square_nodes(*parse_name(name), stride)
+        rows.update(r)
+        cols.update(c)
+    return min(rows), max(rows) + 1, min(cols), max(cols) + 1
+
+
+def _crop(arr, window):
+    r0, r1, c0, c1 = window
+    return np.ascontiguousarray(arr[..., r0:r1, c0:c1])
+
+
+def _local_nodes(name, stride, window):
+    """The square's node rows and columns as indices into the cropped window."""
+    r, c = columns.square_nodes(*parse_name(name), stride)
+    return np.asarray(r) - window[0], np.asarray(c) - window[2]
+
+
+def _window_tag(window, stride):
+    return json.dumps({"window": list(window), "stride": stride})
+
+
+def _windowed_history(state, run, sub, window, stride, shape):
+    """history.load_history_steps, but only from heads kept for this window."""
+    tag = history.history_dir(state, sub) / "window.json"
+    if not tag.exists() or tag.read_text() != _window_tag(window, stride):
+        return []
+    return history.load_history_steps(state, run, sub=sub, shape=shape)
+
+
+def _save_windowed_head(state, run, sub, window, stride, head):
+    d = history.history_dir(state, sub)
+    tag = d / "window.json"
+    if tag.exists() and tag.read_text() != _window_tag(window, stride):
+        for p in d.glob("*.npz"):            # another window's heads: unreadable now
+            p.unlink()
+    history.save_run_head(state, run, head, sub=sub, dtype=np.uint16, split=True)
+    tag.write_text(_window_tag(window, stride))
+    history.prune(state, dwd.run_id(run), sub=sub)
+
+
+def upper_step(deps, kit, work, run, step, group, stride, window):
+    """One step's share of the upper-air fields: {key: cropped u16 codes}."""
+    if group in dwd.UPPER_FIELDS:
+        want = dwd.upper_levels(group)
+        names = [dwd.pressure_file_name(run, step, lv, group) for lv in want]
+        levels = _fetch_levels(deps, kit, work, names, run, group, stride)
+        if sorted(levels) != sorted(want):
+            raise ValueError(f"{group} +{step}: levels {sorted(levels, key=str)}, wanted {want}")
+        return {(group, lv): _crop(_upper_to_codes((group, lv), levels[lv]), window) for lv in want}
+    if group in dwd.UPPER_SINGLES:
+        arr = _only(_fetch_levels(deps, kit, work, [dwd.file_name(run, step, group)], run, group, stride))
+        return {(group, None): _crop(_upper_to_codes((group, None), arr), window)}
+    raise KeyError(group)
+
+
+def fetch_upper(deps, kit, work, run, steps, workers, stride, window):
+    """[(unix hour, u16 [upper fields][R][C])] in time order, cropped to `window`."""
+    jobs = [(s, g) for s in steps for g in list(dwd.UPPER_FIELDS) + list(dwd.UPPER_SINGLES)]
+    got = {s: {} for s in steps}
+    with cf.ThreadPoolExecutor(max_workers=workers) as pool:
+        futs = [pool.submit(upper_step, deps, kit, work, run, s, g, stride, window) for s, g in jobs]
+        for (s, g), fut in zip(jobs, futs):
+            got[s].update(fut.result())
+    base = history.hour_of(run)
+    keys = upper_keys()
+    out = []
+    for s in steps:
+        fields = got.pop(s)
+        out.append((base + s, np.stack([fields[k] for k in keys])))
+    return out
+
+
+def _phys_rows(codes, spec_rows):
+    """u16 [fields][N] → float64 app units [fields][N] (NaN = missing), as a
+    decoder reads them: f32 scale and offset."""
+    sc = np.array([np.float64(np.float32(f[3])) for f in spec_rows])[:, None]
+    off = np.array([np.float64(np.float32(f[4])) for f in spec_rows])[:, None]
+    c = np.asarray(codes)
+    return np.where(c == columns.MISSING, np.nan, off + sc * c.astype(np.float64))
+
+
+PROFILE_PLEVELS = list(dwd.COLUMN_PLEVELS) + list(dwd.UPPER_PLEVELS)
+assert PROFILE_PLEVELS == sorted(PROFILE_PLEVELS, reverse=True)
+
+
+def profile_rows():
+    """Where clue_profile finds each value: rows of column_keys() for the ICC1
+    levels' T/RH/GH, rows of upper_keys() for the rest (wind at the ICC1
+    levels: None where ICU1 carries none)."""
+    ck, uk = column_keys(), upper_keys()
+    rows = {"col": {f: [ck.index((f, p)) for p in dwd.COLUMN_PLEVELS] for f in ("T", "RELHUM", "FI")},
+            "up": {f: [uk.index((f, p)) for p in dwd.UPPER_PLEVELS] for f in dwd.UPPER_FIELDS},
+            "low": {f: [uk.index((f, p)) if (f, p) in uk else None for p in dwd.COLUMN_PLEVELS]
+                    for f in ("U", "V")},
+            "single": {f: uk.index((f, None)) for f in dwd.UPPER_SINGLES}}
+    return rows
+
+
+def clue_profile(col, up, rows=None):
+    """One node's pipeline/clues.py profile from app-unit values: `col` the
+    ICC1 dynamic fields (column_keys order; None = no column for this hour),
+    `up` the ICU1 fields (upper_keys order)."""
+    rows = rows or profile_rows()
+    nan = np.full(len(dwd.COLUMN_PLEVELS), np.nan)
+    pick = (lambda f: nan) if col is None else (lambda f: np.asarray(col)[rows["col"][f]])
+    up = np.asarray(up)
+    low = {f: np.array([np.nan if i is None else up[i] for i in rows["low"][f]]) for f in ("U", "V")}
+    prof = {"p": PROFILE_PLEVELS,
+            "t": np.concatenate([pick("T"), up[rows["up"]["T"]]]),
+            "rh": np.concatenate([pick("RELHUM"), up[rows["up"]["RELHUM"]]]),
+            "gh": np.concatenate([pick("FI"), up[rows["up"]["FI"]]]),
+            "u": np.concatenate([low["U"], up[rows["up"]["U"]]]),
+            "v": np.concatenate([low["V"], up[rows["up"]["V"]]])}
+    for f, i in rows["single"].items():
+        prof[f.lower()] = float(up[i])
+    return prof
+
+
+def node_clue_bytes(col, up, rows=None):
+    prof = clue_profile(col, up, rows)
+    return clues.encode_clues(clues.deck_clues(prof), clues.node_clues(prof))
+
+
+def clue_cubes(names, stride, window, stacks, col_by_hour):
+    """{square: u8 [hours][side][side][27]} — each node computed once, even
+    where squares share an edge."""
+    local = {name: _local_nodes(name, stride, window) for name in names}
+    nodes = sorted({(r, c) for rr, cc in local.values() for r in rr for c in cc})
+    at = {rc: i for i, rc in enumerate(nodes)}
+    nr = np.array([r for r, _ in nodes])
+    nc = np.array([c for _, c in nodes])
+    gather = {name: np.array([[at[(r, c)] for c in cc] for r in rr]) for name, (rr, cc) in local.items()}
+    n = columns.side(stride)
+    out = {name: np.empty((len(stacks), n, n, clues.N_BYTES), dtype=np.uint8) for name in names}
+    col_rows = [f for f in column_spec() if f[1] != columns.STATIC]
+    up_rows = upper_spec()
+    rows = profile_rows()
+    for k, (h, up) in enumerate(stacks):
+        upv = _phys_rows(up[:, nr, nc], up_rows)
+        col = col_by_hour.get(h)
+        colv = None if col is None else _phys_rows(col[:, nr, nc], col_rows)
+        b = np.empty((len(nodes), clues.N_BYTES), dtype=np.uint8)
+        for i in range(len(nodes)):
+            b[i] = np.frombuffer(node_clue_bytes(None if colv is None else colv[:, i], upv[:, i], rows), np.uint8)
+        for name in names:
+            out[name][k] = b[gather[name]]
+    return out
+
+
+def write_upper(blob_dir, run, names, stride, window, stacks, workers=1):
+    """One .icu per square under upper/<run>/; returns the bytes written."""
+    spec = upper_spec()
+    hours = [h for h, _ in stacks]
+    tiles = Path(blob_dir) / site.upper_path(run)
+    tiles.mkdir(parents=True, exist_ok=True)
+    n = columns.side(stride)
+
+    def one(name):
+        lat, lon = parse_name(name)
+        rr, cc = _local_nodes(name, stride, window)
+        cube = np.stack([u[:, rr][:, :, cc] for _, u in stacks])
+        data = columns.encode_upper(lat, lon, stride, hours, spec, cube, np.zeros((0, n, n), np.uint16))
+        (tiles / f"{name}.icu").write_bytes(data)
+        return len(data)
+
+    with cf.ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        return sum(pool.map(one, names))
+
+
+def write_clues(blob_dir, run, names, stride, window, stacks, col_by_hour):
+    """One .icx per square under clues/<run>/; returns the bytes written."""
+    hours = [h for h, _ in stacks]
+    tiles = Path(blob_dir) / site.clues_path(run)
+    tiles.mkdir(parents=True, exist_ok=True)
+    total = 0
+    for name, cube in clue_cubes(names, stride, window, stacks, col_by_hour).items():
+        lat, lon = parse_name(name)
+        data = cluefile.encode_clue_square(lat, lon, int(round(columns.spacing_deg(stride) * 1000)), hours, cube)
+        (tiles / f"{name}.icx").write_bytes(data)
+        total += len(data)
+    return total
+
+
+def _tex_entry(fmt, run, hours, n_past, stride, tiles):
+    ms = [h * 3600 * 1000 for h in hours]
+    # `steps` and `stepsMs` are the same list (unix ms), so a reader written
+    # against either name works.
+    return {"format": fmt, "run": dwd.run_iso(run), "runMs": int(run.timestamp() * 1000),
+            "steps": ms, "stepsMs": ms, "historySteps": n_past,
+            "spacing": columns.spacing_deg(stride), "side": columns.side(stride), "tiles": tiles}
+
+
+def build_upper_and_clues(blob_dir, state, work, deps, kit, run, steps, squares, workers,
+                          column_stacks=None, column_sub="columns", stride=None):
+    """The upper-air (ICU1) and clue (ICX1) files of `squares`, every step
+    with 60 h of upper history first (state/<UPPER_SUB>, history.py), under
+    upper/<run>/ and clues/<run>/. The clue history is rebuilt from the upper
+    history and the column history. column_stacks: the column build's
+    [(hour, u16 [column fields][LY][LX])], history included; None fetches the
+    columns here and keeps their head under state/<column_sub>. Returns the
+    (upper, clues) manifest entries, or (None, None); never raises."""
+    stride = stride or UPPER_STRIDE
+    t0 = time.monotonic()
+    names = list(squares)
+    try:
+        window = square_window(names, stride)
+        crop_shape = (window[1] - window[0], window[3] - window[2])
+        base = history.hour_of(run)
+        head_steps = [s for s in range(history.HEAD_STEPS) if s in steps]
+        whole_head = len(head_steps) == history.HEAD_STEPS
+
+        def missing():
+            out = dwd.missing_upper_files(deps.listing, run, steps)
+            return out + (dwd.missing_column_files(deps.listing, run, steps) if column_stacks is None else [])
+
+        if not _wait_for_files(deps, run, "upper air", UPPER_WAIT_S, missing):
+            return None, None
+        if column_stacks is None:
+            _, own = fetch_columns(deps, kit, work, run, steps, column_fetch_workers(), stride)
+            own = [(h, _crop(c, window)) for h, c in own]
+            past = _windowed_history(state, run, column_sub, window, stride, (len(column_keys()),) + crop_shape)
+            col_by_hour = dict(past)
+            col_by_hour.update(own)
+            if whole_head:
+                by = dict(own)
+                _save_windowed_head(state, run, column_sub, window, stride, np.stack([by[base + s] for s in head_steps]))
+        else:
+            col_by_hour = {h: _crop(c, window) for h, c in column_stacks}
+        own_up = fetch_upper(deps, kit, work, run, steps, column_fetch_workers(), stride, window)
+        past_up = _windowed_history(state, run, UPPER_SUB, window, stride, (len(upper_keys()),) + crop_shape)
+        if whole_head:
+            by = dict(own_up)
+            _save_windowed_head(state, run, UPPER_SUB, window, stride, np.stack([by[base + s] for s in head_steps]))
+        stacks = past_up + own_up
+        hours = [h for h, _ in stacks]
+        up_bytes = write_upper(blob_dir, run, names, stride, window, stacks, workers)
+        t1 = time.monotonic()
+        clue_bytes = write_clues(blob_dir, run, names, stride, window, stacks, col_by_hour)
+    except Exception as e:
+        print(f"::warning::upper air failed: {type(e).__name__}: {e}")
+        for root in (site_upper_root(), site_clues_root()):
+            shutil.rmtree(Path(blob_dir) / root, ignore_errors=True)
+        return None, None
+    print(f"upper air: {len(names)} squares, {len(hours)} steps ({len(past_up)} history), "
+          f"ICU1 {up_bytes / 1e6:.1f} MB, ICX1 {clue_bytes / 1e6:.1f} MB, {time.monotonic() - t0:.0f} s "
+          f"(clues {time.monotonic() - t1:.0f} s)")
+    return (_tex_entry("ICU1", run, hours, len(past_up), stride, site.upper_path(run)),
+            _tex_entry("ICX1", run, hours, len(past_up), stride, site.clues_path(run)))
 
 
 def main():

@@ -106,6 +106,11 @@ COLUMN_SFIELDS = ["T_2M", "RELHUM_2M", "WW"]        # single level, per step
 UPPER_PLEVELS = [600, 500, 400, 300, 250, 200]
 UPPER_FIELDS = ["T", "RELHUM", "FI", "U", "V"]
 UPPER_SINGLES = ["CAPE_CON", "CAPE_ML", "HBAS_CON", "HTOP_CON"]
+# Wind at the column levels (1000-700 hPa), so the low deck's clues get wind,
+# shear and shear direction. They go in ICU1 ONLY: ICC1 keeps T/RH/GH, and
+# the app's fog reads every level of an ICC1 square.
+UPPER_WIND_FIELDS = ["U", "V"]
+UPPER_WIND_PLEVELS = list(COLUMN_PLEVELS)
 # No 80 m field exists in ICON open data; T at 80 m above ground is
 # interpolated in height between the two of these model levels (full levels;
 # 120 is the lowest) that bracket 80 m at each node, with the time-invariant
@@ -153,6 +158,32 @@ def missing_column_files(listing, run, steps):
     hh = f"{run:%H}"
     missing = []
     for field, names in column_files(run, steps).items():
+        html = listing(hh, field) or ""
+        missing += [n for n in names if n not in html]
+    return missing
+
+
+def upper_levels(field):
+    """The pressure levels one upper-air build fetches for `field`."""
+    return list(UPPER_WIND_PLEVELS) + list(UPPER_PLEVELS) if field in UPPER_WIND_FIELDS else list(UPPER_PLEVELS)
+
+
+def upper_files(run, steps):
+    """{directory field: [file names]} — every file one upper-air (ICU1) build reads."""
+    out = {f: [] for f in UPPER_FIELDS + UPPER_SINGLES}
+    for s in steps:
+        for f in UPPER_FIELDS:
+            out[f] += [pressure_file_name(run, s, lv, f) for lv in upper_levels(f)]
+        for f in UPPER_SINGLES:
+            out[f].append(file_name(run, s, f))
+    return out
+
+
+def missing_upper_files(listing, run, steps):
+    """`listing(hh, field) -> html`. The upper-air files of `run` not listed yet."""
+    hh = f"{run:%H}"
+    missing = []
+    for field, names in upper_files(run, steps).items():
         html = listing(hh, field) or ""
         missing += [n for n in names if n not in html]
     return missing

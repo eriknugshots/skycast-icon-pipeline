@@ -30,6 +30,14 @@ def thick_path(run):
     return f"thick/{run_id(run)}"
 
 
+def upper_path(run):
+    return f"upper/{run_id(run)}"
+
+
+def clues_path(run):
+    return f"clues/{run_id(run)}"
+
+
 def build_manifest(run, built, step_hours, squares, history_hours, complete=True, tail=None, columns=None,
                    blocks=None, thick=None, repairs=0):
     out = {

@@ -75,3 +75,13 @@ def test_manifest_carries_the_blocks_and_thickness_or_null():
     # Everything an older app build reads is exactly what it was without them.
     assert {k: v for k, v in m.items() if k not in ("blocks", "thick")} == \
         {k: v for k, v in plain.items() if k not in ("blocks", "thick")}
+
+
+def test_history_runs_are_listed_only_when_given():
+    run = dt.datetime(2026, 9, 27, 0, tzinfo=UTC)
+    plain = json.loads(build_manifest(run, run, [1], ["N40W125"], 0))
+    assert "historyRuns" not in plain                      # HRRR, RRFS: no history, no key
+    runs = [{"runMs": 1, "publishedMs": 2}, {"runMs": 3, "publishedMs": 4}]
+    m = json.loads(build_manifest(run, run, [1], ["N40W125"], 0, history_runs=runs))
+    assert m["historyRuns"] == runs
+    assert json.loads(build_manifest(run, run, [1], ["N40W125"], 0, history_runs=[]))["historyRuns"] == []

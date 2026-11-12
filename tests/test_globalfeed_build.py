@@ -106,6 +106,19 @@ def test_history_gfs(small, tmp_path):
     assert man["historySteps"] == history.HEAD_STEPS
     assert man["stepsMs"][:history.HEAD_STEPS] == [(base + i) * 3600 * 1000 for i in range(history.HEAD_STEPS)]
     assert len(man["stepsMs"]) == history.HEAD_STEPS + len(m.main_steps)
+    assert man["historyRuns"] == []                    # no publication recorded yet
+
+
+def test_history_runs_from_the_recorded_publications(small, tmp_path):
+    from pipeline import published
+    m = _small(AIFS, (0, 6, 12), (18, 24))
+    state = tmp_path / "state"
+    earlier = int((RUN - timedelta(hours=6)).timestamp() * 1000)
+    published.record(state, earlier, earlier + 5 * 3600 * 1000)
+    published.record(state, int(RUN.timestamp() * 1000), 1)   # a record of this run itself is not history
+    gb.build(m, RUN, tmp_path / "o", _get, NOW, state, sleep=lambda s: None)
+    man = json.loads((tmp_path / "o" / "manifest.json").read_text())
+    assert man["historyRuns"] == [{"runMs": earlier, "publishedMs": earlier + 5 * 3600 * 1000}]
 
 
 def test_history_aifs(small, tmp_path):

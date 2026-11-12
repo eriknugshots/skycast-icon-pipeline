@@ -79,6 +79,8 @@ jobs:
               # the state is pushed only after a publish that worked.
               if (cd publish && node blob.mjs ../site-ifs); then
                 if [ "$STATE_KEEP" != "1" ]; then
+                  # When this run went out, for the next builds' historyRuns (pipeline/published.py).
+                  python -m pipeline.published state site-ifs/manifest.json || echo "::warning::publication time not recorded"
                   (
                     cd state || exit 1
                     rm -rf .git

@@ -113,6 +113,7 @@ def test_history_from_state_is_prepended(tmp_path):
     m = json.loads((tmp_path / "site" / "manifest.json").read_text())
     assert m["historySteps"] == 6
     assert m["stepsMs"][0] == hour_of(prev) * 3600000
+    assert m["historyRuns"] == []                      # no publication recorded yet
     sq = decode_square((tmp_path / "site" / "tiles" / "2026092700" / "N00E000.icl").read_bytes())
     assert sq["cube"][0, 0, 0, 0] == 42 and sq["cube"][6, 0, 0, 0] == 0
 
@@ -791,3 +792,13 @@ def test_rebuilding_the_live_run_counts_a_repair(tmp_path, monkeypatch):
     deps, _ = _fake_deps(tmp_path, prev_manifest={**prev, "repairs": 2})
     assert run_build.build(site=tmp_path / "s2", state=tmp_path / "st2", work=tmp_path / "w2",
                            deps=deps, pages_base="https://x") == run_build.NOTHING_TO_DO
+
+
+def test_history_runs_go_in_both_manifests(tmp_path):
+    from pipeline import published
+    prev_ms = int((RUN - dt.timedelta(hours=6)).timestamp() * 1000)
+    published.record(tmp_path / "state", prev_ms, prev_ms + 4 * 3600000)
+    site, blob = _blocks_build(tmp_path, [0, 1], lambda s, f: 10, squares=["N40W125"])
+    want = [{"runMs": prev_ms, "publishedMs": prev_ms + 4 * 3600000}]
+    assert json.loads((site / "manifest.json").read_text())["historyRuns"] == want
+    assert json.loads((blob / "manifest.json").read_text())["historyRuns"] == want

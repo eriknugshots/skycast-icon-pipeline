@@ -48,7 +48,7 @@ def expected_events(fail_first_publish=False):
             ok = not (fail_first_publish and pubs == 0)
             pubs += 1
             if ok:
-                events.append("statepush")
+                events += ["stamp", "statepush"]
         events.append("sleep 600")
         clock += 600
     return events
@@ -59,7 +59,7 @@ def _stub(path, text):
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 
-def run_loop(tmp_path, feed, fail_first_publish=False, keep_state=""):
+def run_loop(tmp_path, feed, fail_first_publish=False, keep_state="", stamp_rc=0):
     f = FEEDS[feed]
     bin_ = tmp_path / "bin"
     bin_.mkdir()
@@ -76,6 +76,9 @@ def run_loop(tmp_path, feed, fail_first_publish=False, keep_state=""):
           rc=$(sed -n "$((n + 1))p" "$T/rcs"); rc=${{rc:-3}}
           if [ "$rc" != "3" ]; then mkdir -p site-{feed}; fi   # a failed build may leave a partial dir
           echo "build $rc" >> "$T/events"; exit "$rc"
+        fi
+        if [ "$1 $2" = "-m pipeline.published" ]; then
+          echo "stamp" >> "$T/events"; echo "$*" > "$T/stamp_args"; exit "${{STAMP_RC:-0}}"
         fi
         exit 99
         """))
@@ -102,7 +105,8 @@ def run_loop(tmp_path, feed, fail_first_publish=False, keep_state=""):
     env = {**os.environ, "PATH": f"{bin_}:{os.environ['PATH']}", "T": str(tmp_path),
            f["base"]: "https://blob.example", "BLOB_READ_WRITE_TOKEN": "tok",
            "GITHUB_TOKEN": "gh", "GITHUB_REPOSITORY": "o/r",
-           "FAIL_FIRST": "1" if fail_first_publish else "0", "STATE_KEEP": keep_state}
+           "FAIL_FIRST": "1" if fail_first_publish else "0", "STATE_KEEP": keep_state,
+           "STAMP_RC": str(stamp_rc)}
     # GitHub runs `run:` steps as: bash --noprofile --norc -eo pipefail {0}
     return subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", str(script)],
                           cwd=tmp_path, env=env, capture_output=True, text=True, timeout=120)
@@ -124,6 +128,15 @@ def test_loop_publishes_and_pushes_state_only_on_built(tmp_path, feed):
     assert "--force" in (tmp_path / "git_push").read_text().splitlines()[0]
     assert not (tmp_path / f"site-{feed}").exists()
     assert not (tmp_path / "stale").exists()   # every non-published pass cleaned its out dir
+    assert (tmp_path / "stamp_args").read_text().strip() == f"-m pipeline.published state site-{feed}/manifest.json"
+
+
+@pytest.mark.parametrize("feed", LOOPS)
+def test_a_failed_stamp_still_pushes_state(tmp_path, feed):
+    p = run_loop(tmp_path, feed, stamp_rc=1)
+    assert p.returncode == 0, p.stderr
+    assert _events(tmp_path) == expected_events()
+    assert "publication time not recorded" in p.stdout
 
 
 @pytest.mark.parametrize("feed", LOOPS)
@@ -141,6 +154,7 @@ def test_unfetchable_state_branch_is_never_overwritten(tmp_path, feed):
     p = run_loop(tmp_path, feed, keep_state="1")
     assert p.returncode == 0, p.stderr
     assert "statepush" not in _events(tmp_path)
+    assert "stamp" not in _events(tmp_path)
     assert "publish" in _events(tmp_path)
 
 

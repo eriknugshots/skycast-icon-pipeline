@@ -99,6 +99,7 @@ jobs:
       # column feed, plus the manifest that names them — never on Pages, never in
       # its 1 GB budget; blob/manifest.json is site's plus those keys).
       - name: publish to Vercel Blob (the app's feed; Pages above stays for older builds) — full builds only
+        id: blob
         if: steps.build.outputs.rc == '0' && !inputs.steps && !inputs.squares
         continue-on-error: true
         env:
@@ -111,6 +112,11 @@ jobs:
       - name: publish state (orphan force-push to state) — full builds only
         if: steps.build.outputs.rc == '0' && !inputs.steps && steps.state.outputs.keep != '1'
         run: |
+          # When this run went out on Blob, for the next builds' historyRuns
+          # (pipeline/published.py) — only after a Blob publish that worked.
+          if [ "${{ steps.blob.outcome }}" = "success" ]; then
+            python -m pipeline.published state blob/manifest.json || echo "::warning::publication time not recorded"
+          fi
           cd state
           rm -rf .git
           git init -b state -q

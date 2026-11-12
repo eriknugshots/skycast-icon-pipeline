@@ -24,7 +24,7 @@ from pathlib import Path
 
 import numpy as np
 
-from pipeline import blocks, history, thick
+from pipeline import blocks, history, published, thick
 from pipeline.dwd import run_id, run_iso
 from pipeline.encode import encode_square, quantize
 from pipeline.site import blocks_path, build_manifest, tail_path, thick_path, tiles_path
@@ -222,8 +222,13 @@ def build(model, run, out_dir, get, now, state, sleep=time.sleep, steps=None):
                 "stepsMs": [h * 3600 * 1000 for h in tail_hours], "tiles": tail_path(run)}
 
     thickness = build_thick(model, run, out_dir, get, sleep, names)
+    try:
+        hist_runs = published.history_runs(state, run)
+    except Exception as e:
+        print(f"::warning::publication times unreadable, listing none: {type(e).__name__}: {e}")
+        hist_runs = []
     m = json.loads(build_manifest(run, now, hours, names, len(past_hours), steps is None, tail=tail,
-                                  blocks=blocks_path(run), thick=thickness))
+                                  blocks=blocks_path(run), thick=thickness, history_runs=hist_runs))
     for k in ("columns",) + (() if thickness else ("thick",)):
         m.pop(k, None)
     m["model"] = model.name

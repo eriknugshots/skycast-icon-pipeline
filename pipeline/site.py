@@ -31,7 +31,7 @@ def thick_path(run):
 
 
 def build_manifest(run, built, step_hours, squares, history_hours, complete=True, tail=None, columns=None,
-                   blocks=None, thick=None, repairs=0):
+                   blocks=None, thick=None, repairs=0, history_runs=None):
     out = {
         "run": run_iso(run),
         # False for a test build (some steps, some squares). Only a complete
@@ -67,4 +67,11 @@ def build_manifest(run, built, step_hours, squares, history_hours, complete=True
         "repairs": int(repairs),
         "attribution": ATTRIBUTION,
     }
+    # When each run ahead of this one in the history went out, as far as the
+    # state recorded it (pipeline/published.py): [{runMs, publishedMs}, ...]
+    # ascending. Absent from feeds that keep no history (HRRR, RRFS); a run
+    # with no record is simply not listed. Older readers ignore the key.
+    if history_runs is not None:
+        out["historyRuns"] = [{"runMs": int(r["runMs"]), "publishedMs": int(r["publishedMs"])}
+                              for r in history_runs]
     return json.dumps(out, separators=(",", ":"))

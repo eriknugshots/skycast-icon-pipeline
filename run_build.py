@@ -21,7 +21,7 @@ from collections import namedtuple
 from pathlib import Path
 import numpy as np
 
-from pipeline import blocks, columns, dwd, history, live, site, thick
+from pipeline import blocks, columns, dwd, history, live, published, site, thick
 from pipeline.encode import encode_square, quantize, FIELD_COUNT
 from pipeline.regrid import ensure_kit, regrid, lattice_levels, regrid_values
 from pipeline.squares import all_squares, parse_name, slice_square, NX, NY
@@ -213,6 +213,11 @@ def build(site, state, work, deps, pages_base, steps=None, squares=None, workers
         site_bytes = size + _dir_bytes(site / site_tail_tiles_root())
     print(f"site: {site_bytes / 1e6:.0f} MB in squares and tail")
     n_past = len(past)
+    try:
+        hist_runs = published.history_runs(state, run)
+    except Exception as e:
+        print(f"::warning::publication times unreadable, listing none: {type(e).__name__}: {e}")
+        hist_runs = []
     # The day blocks go to Blob only, in QUANT_STEP steps even when Pages had
     # to fall back to 4 %: their size is Blob's to carry, not Pages' budget.
     blob.mkdir(parents=True, exist_ok=True)
@@ -222,11 +227,12 @@ def build(site, state, work, deps, pages_base, steps=None, squares=None, workers
     past.clear()
     # Pages carries none of the columns, blocks or thickness, so its manifest names none.
     (site / "manifest.json").write_text(site_manifest(run, deps.now(), hours, names, n_past, full, tail, None,
-                                                      repairs=repairs))
+                                                      repairs=repairs, history_runs=hist_runs))
     thickness = build_thick(blob, state, work, deps, kit, run, steps, names, workers, hours)
     cols = build_columns(blob, state, work, deps, kit, run, steps, names, workers)
     (blob / "manifest.json").write_text(site_manifest(run, deps.now(), hours, names, n_past, full, tail, cols,
-                                                      blocks=site_blocks(run), thick=thickness, repairs=repairs))
+                                                      blocks=site_blocks(run), thick=thickness, repairs=repairs,
+                                                      history_runs=hist_runs))
     print(f"built {len(names)} squares, {len(hours)} steps ({n_past} history)")
     return BUILT
 
@@ -260,9 +266,9 @@ def site_blocks(run):
 
 
 def site_manifest(run, built, hours, names, history_steps, complete, tail=None, columns=None,
-                  blocks=None, thick=None, repairs=0):
+                  blocks=None, thick=None, repairs=0, history_runs=None):
     return site.build_manifest(run, built, hours, names, history_steps, complete, tail, columns, blocks, thick,
-                               repairs)
+                               repairs, history_runs=history_runs)
 
 
 def write_blocks(blob_dir, run, names, stacks, hours):

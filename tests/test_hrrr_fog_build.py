@@ -72,6 +72,37 @@ def test_fog_build_no_live_manifest_fails(tmp_path):
     assert fb.main(["--out", str(tmp_path / "o")], fetch_json=_fetch(LIVE), build=_build()) == 1
 
 
+
+def _check(tmp_path, live, built_run=RUN):
+    d = tmp_path / "built"
+    d.mkdir(exist_ok=True)
+    (d / "manifest.json").write_text(json.dumps(dict(LIVE, run=built_run, fog=dict(ENTRY, run=built_run))))
+    return fb.main(["--still-live", str(d), "--live-manifest", "http://m"],
+                   fetch_json=_fetch(live), build=_build())
+
+
+def test_still_live_same_run(tmp_path):
+    assert _check(tmp_path, LIVE) == 0
+
+
+def test_still_live_run_moved(tmp_path, capsys):
+    assert _check(tmp_path, dict(LIVE, run="2026-11-10T13Z")) == 3
+    assert "live run is now 2026-11-10T13Z" in capsys.readouterr().out
+
+
+def test_still_live_missing_manifest_fails(tmp_path):
+    assert fb.main(["--still-live", str(tmp_path / "nope"), "--live-manifest", "http://m"],
+                   fetch_json=_fetch(LIVE), build=_build()) == 1
+
+
+def test_still_live_never_builds(tmp_path):
+    calls = []
+    d = tmp_path / "built"
+    d.mkdir()
+    (d / "manifest.json").write_text(json.dumps(dict(LIVE, fog=ENTRY)))
+    fb.main(["--still-live", str(d), "--live-manifest", "http://m"], fetch_json=_fetch(LIVE), build=_build(calls))
+    assert calls == []
+
 def test_get_retries_once_then_builds(tmp_path):
     n = {"c": 0}
 

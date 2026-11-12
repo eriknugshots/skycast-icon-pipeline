@@ -26,6 +26,7 @@ import numpy as np
 from .squares import DEG, SIDE, row_indices, col_indices
 
 MAGIC = b"ICC1"
+MAGIC_UPPER = b"ICU1"   # the upper-air file: the same layout, its own magic and kinds
 MISSING = 0xFFFF
 MAX_CODE = MISSING - 1
 # zlib level: 9 took ~5 s per 0.25° square (153 steps) for 2 % fewer bytes
@@ -36,15 +37,23 @@ _FIELD = struct.Struct("<BBHff")        # kind, levelType, level, scale, offset
 
 # Kinds. Units are the app's (Open-Meteo's): °C, %, metres above sea level.
 T, RH, GH, HSURF, WW = 1, 2, 3, 4, 5
-KIND_NAMES = {T: "T", RH: "RH", GH: "GH", HSURF: "HSURF", WW: "WW"}
+# ICU1 only: wind components (m/s) and ICON's convection singles.
+U, V, CAPE_CON, CAPE_ML, HBAS_CON, HTOP_CON = 6, 7, 8, 9, 10, 11
+KIND_NAMES = {T: "T", RH: "RH", GH: "GH", HSURF: "HSURF", WW: "WW", U: "U", V: "V",
+              CAPE_CON: "CAPE_CON", CAPE_ML: "CAPE_ML", HBAS_CON: "HBAS_CON", HTOP_CON: "HTOP_CON"}
 # Level types. STATIC fields hold one value per node, not one per step.
-STATIC, PRESSURE_HPA, HEIGHT_AGL_M = 0, 1, 2
+# SINGLE (ICU1 only) is a per-step field with no level (level 0).
+STATIC, PRESSURE_HPA, HEIGHT_AGL_M, SINGLE = 0, 1, 2, 3
 
 # Resolution per kind: 0.1 °C (the app's inversion test needs a 0.5 °C rise
 # between levels; Open-Meteo also answers in 0.1 °C), 1 % RH, 1 m height;
 # WW is the WMO 4677 code itself (0-99).
 _QUANT = {T: (0.1, -150.0), RH: (1.0, 0.0), GH: (1.0, -1000.0), HSURF: (1.0, -1000.0),
-          WW: (1.0, 0.0)}
+          WW: (1.0, 0.0),
+          # ICU1: wind 0.1 m/s from -200; CAPE 1 J/kg; cloud-base/top heights 1 m
+          # from -1000 (ICON's -500 m "none" is code 500).
+          U: (0.1, -200.0), V: (0.1, -200.0), CAPE_CON: (1.0, 0.0), CAPE_ML: (1.0, 0.0),
+          HBAS_CON: (1.0, -1000.0), HTOP_CON: (1.0, -1000.0)}
 
 
 def field_spec(plevels):
@@ -74,6 +83,18 @@ def field_spec_hrrr():
     in wrfprsf). 8 levels x (T, RH, GH), T and RH at 2 m, static HSURF = 27."""
     return [f for f in field_spec(HRRR_PLEVELS)
             if not (f[0] == WW or (f[0] == T and f[1] == HEIGHT_AGL_M and f[2] == 80))]
+
+
+def upper_field_spec(plevels, singles=(CAPE_CON, CAPE_ML, HBAS_CON, HTOP_CON)):
+    """The ICU1 field table, in body order: per pressure level (as given) T,
+    RH, GH, U, V; then the single-level fields. Every field is per step."""
+    out = []
+    for p in plevels:
+        for k in (T, RH, GH, U, V):
+            out.append((k, PRESSURE_HPA, int(p)) + _QUANT[k])
+    for k in singles:
+        out.append((k, SINGLE, 0) + _QUANT[k])
+    return out
 
 
 def quantize(values, scale, offset):
@@ -144,9 +165,11 @@ def _unplanes(raw, n):
     return np.cumsum(d, dtype=np.uint64).astype(np.uint64) % 65536
 
 
-def encode_columns_grid(sw_lat, sw_lon, spacing_mdeg, n, step_hours, spec, steps_codes, static_codes):
+def encode_columns_grid(sw_lat, sw_lon, spacing_mdeg, n, step_hours, spec, steps_codes, static_codes,
+                        magic=MAGIC):
     """The encoder for any n x n lattice: spacing_mdeg is the node spacing in
-    milli-degrees. steps_codes: u16 [steps][dynamic fields][side][side] — every field of
+    milli-degrees; magic is ICC1 except for an ICU1 file (encode_upper).
+    steps_codes: u16 [steps][dynamic fields][side][side] — every field of
     `spec` but the static ones, in spec order. static_codes: u16 [static
     fields][side][side]. step_hours: ascending unix hours."""
     steps_codes = np.asarray(steps_codes)
@@ -170,7 +193,7 @@ def encode_columns_grid(sw_lat, sw_lon, spacing_mdeg, n, step_hours, spec, steps
             # [steps][rows][cols] → [rows][cols][steps]: a node's hours together.
             parts.append(np.moveaxis(steps_codes[:, di], 0, -1).reshape(-1)); di += 1
     body = np.concatenate(parts) if parts else np.zeros(0, np.uint16)
-    head = _HEADER.pack(MAGIC, int(sw_lat), int(sw_lon), int(spacing_mdeg),
+    head = _HEADER.pack(magic, int(sw_lat), int(sw_lon), int(spacing_mdeg),
                         n, n, len(hours), len(spec))
     times = struct.pack(f"<{len(hours)}I", *hours)
     table = b"".join(_FIELD.pack(k, lt, lv, sc, off) for k, lt, lv, sc, off in spec)
@@ -184,19 +207,26 @@ def encode_columns(sw_lat, sw_lon, stride, step_hours, spec, steps_codes, static
                                step_hours, spec, steps_codes, static_codes)
 
 
+def encode_upper(sw_lat, sw_lon, stride, step_hours, spec, steps_codes, static_codes):
+    """An ICU1 upper-air square: byte for byte the ICC1 layout under its own
+    magic (spec from upper_field_spec)."""
+    return encode_columns_grid(sw_lat, sw_lon, int(round(spacing_deg(stride) * 1000)), side(stride),
+                               step_hours, spec, steps_codes, static_codes, magic=MAGIC_UPPER)
+
+
 def header_bytes(steps, fields):
     """Bytes before the zlib stream."""
     return _HEADER.size + 4 * steps + _FIELD.size * fields
 
 
-def decode_columns(blob):
+def decode_columns(blob, magic=MAGIC):
     """The inverse of encode_columns, for tests and for checking a published
     file: {sw_lat, sw_lon, spacing_mdeg, cols, rows, step_hours, spec,
     fields: [codes]} — a dynamic field's codes are [rows][cols][steps], a
     static field's [rows][cols]."""
-    magic, sw_lat, sw_lon, sp, cols, rows, steps, nf = _HEADER.unpack_from(blob, 0)
-    if magic != MAGIC:
-        raise ValueError("not an ICC1 file")
+    got, sw_lat, sw_lon, sp, cols, rows, steps, nf = _HEADER.unpack_from(blob, 0)
+    if got != magic:
+        raise ValueError(f"not an {magic.decode()} file")
     off = _HEADER.size
     hours = list(struct.unpack_from(f"<{steps}I", blob, off)); off += 4 * steps
     spec = []

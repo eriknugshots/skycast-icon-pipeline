@@ -101,6 +101,11 @@ COLUMN_SFIELDS = ["T_2M", "RELHUM_2M", "WW"]        # single level, per step
 # 51-57 drizzle, 61-67 rain, 71-77 snow, 80-86 showers, 95/96 thunder); DWD
 # publishes it under grib/<HH>/ww/ at the same steps as T_2M (listing checked
 # 2026-11-07). It is categorical: remapped nearest-link, never blended.
+# The upper-air file (ICU1, the cloud-texture clues): ICON global publishes
+# these levels (no 450/350) and the four convection singles.
+UPPER_PLEVELS = [600, 500, 400, 300, 250, 200]
+UPPER_FIELDS = ["T", "RELHUM", "FI", "U", "V"]
+UPPER_SINGLES = ["CAPE_CON", "CAPE_ML", "HBAS_CON", "HTOP_CON"]
 # No 80 m field exists in ICON open data; T at 80 m above ground is
 # interpolated in height between the two of these model levels (full levels;
 # 120 is the lowest) that bracket 80 m at each node, with the time-invariant

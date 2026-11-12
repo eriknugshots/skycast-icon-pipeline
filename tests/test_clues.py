@@ -57,8 +57,12 @@ def test_node_convection_fields():
     pr.update(cape_con=400.0, hbas_con=1500.0, htop_con=9000.0)
     n = node_clues(pr)
     assert n["convCape"] == 400.0 and n["convBase"] == 1.5 and n["convTop"] == 9.0
-    none = node_clues(cp.clear_dry())
-    assert none["convBase"] == 0.0 and none["convTop"] == 0.0
+    none = node_clues(cp.clear_dry())  # -500 = no convection: missing, not 0 km
+    assert math.isnan(none["convBase"]) and math.isnan(none["convTop"])
+    b = encode_clues(deck_clues(cp.clear_dry()), none)
+    assert b[22] == 255 and b[23] == 255
+    d = decode_clues(b)["node"]
+    assert d["convBase"] is None and d["convTop"] is None
 
 
 def test_bytes_clamp_and_dry_layer():
@@ -78,3 +82,47 @@ def test_fixture_matches_code():
         got = encode_clues(deck_clues(pr), node_clues(pr))
         assert list(got) == entry["bytes"], entry["name"]
         assert decode_clues(got) == entry["decoded"], entry["name"]
+
+
+def test_rounding_half_up_ties():
+    assert clues._byte("wind", 1.25) == 3        # 2.5 -> 3 (Python round would give 2)
+    assert clues._byte("wind", 0.25) == 1        # 0.5 -> 1
+    assert clues._byte("cruiseU", -0.5) == 128   # 127.5 -> 128
+    assert clues._byte("cruiseU", 0.5) == 129    # 128.5 -> 129
+    assert clues._byte("capRh", 12.5) == 13
+    assert clues._byte("wind", 1.2499) == 2
+
+
+def test_byte_nonfinite_is_missing():
+    for x in (np.float32("nan"), np.float32("inf"), float("-inf"), None):
+        assert clues._byte("wind", x) == 255
+
+
+def test_unrelated_nan_wind_does_not_change_moisture():
+    ref = deck_clues(cp.thin_lid_mid())["mid"]
+    pr = cp.thin_lid_mid()
+    cp.at(pr, 500.0, u=np.nan)
+    got = deck_clues(pr)["mid"]
+    for k in ("depth", "capTheta", "capRh"):
+        assert got[k] == ref[k]
+
+
+def test_interior_nan_level_is_spanned():
+    pr = cp.deep_moist_mid()
+    cp.at(pr, 500.0, t=np.nan, rh=np.nan, gh=np.nan, u=np.nan, v=np.nan)
+    assert deck_clues(pr)["mid"]["depth"] >= 2000
+
+
+def test_run_at_edge_of_valid_data_is_missing():
+    pr = cp.deep_moist_mid()
+    for p in (1000.0, 925.0, 850.0, 700.0):   # nothing valid below 600 hPa
+        cp.at(pr, p, t=np.nan, rh=np.nan, gh=np.nan, u=np.nan, v=np.nan)
+    mid = deck_clues(pr)["mid"]
+    assert math.isnan(mid["depth"]) and math.isnan(mid["capTheta"]) and math.isnan(mid["capRh"])
+    assert not math.isnan(mid["lapse"])        # wind/shear/lapse may still be given
+    b = encode_clues(deck_clues(pr), node_clues(pr))
+    assert list(b[7:10]) == [255, 255, 255]
+    # a single NaN at 700 with valid data below it is NOT an edge: depth survives
+    pr2 = cp.deep_moist_mid()
+    cp.at(pr2, 700.0, t=np.nan, rh=np.nan, gh=np.nan)
+    assert deck_clues(pr2)["mid"]["depth"] >= 2000

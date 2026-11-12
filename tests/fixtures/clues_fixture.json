@@ -113,8 +113,8 @@
     },
     "node": {
      "convCape": 0.0,
-     "convBase": 0.0,
-     "convTop": 0.0,
+     "convBase": null,
+     "convTop": null,
      "cruiseRhi": 0.335,
      "cruiseU": 0.0,
      "cruiseV": 0.0
@@ -143,8 +143,8 @@
     0,
     109,
     0,
-    0,
-    0,
+    255,
+    255,
     67,
     128,
     128
@@ -262,8 +262,8 @@
     },
     "node": {
      "convCape": 0.0,
-     "convBase": 0.0,
-     "convTop": 0.0,
+     "convBase": null,
+     "convTop": null,
      "cruiseRhi": 0.34,
      "cruiseU": 0.0,
      "cruiseV": 0.0
@@ -292,8 +292,8 @@
     0,
     130,
     0,
-    0,
-    0,
+    255,
+    255,
     68,
     128,
     128
@@ -411,8 +411,8 @@
     },
     "node": {
      "convCape": 0.0,
-     "convBase": 0.0,
-     "convTop": 0.0,
+     "convBase": null,
+     "convTop": null,
      "cruiseRhi": 0.34,
      "cruiseU": 0.0,
      "cruiseV": 0.0
@@ -441,8 +441,8 @@
     18,
     111,
     0,
-    0,
-    0,
+    255,
+    255,
     68,
     128,
     128
@@ -549,7 +549,7 @@
       "lapse": 6.5
      },
      "high": {
-      "depth": 2540.0,
+      "depth": null,
       "capTheta": null,
       "capRh": null,
       "shearDir": 0.0,
@@ -560,8 +560,8 @@
     },
     "node": {
      "convCape": 0.0,
-     "convBase": 0.0,
-     "convTop": 0.0,
+     "convBase": null,
+     "convTop": null,
      "cruiseRhi": 1.005,
      "cruiseU": 0.0,
      "cruiseV": 0.0
@@ -582,7 +582,7 @@
     0,
     0,
     130,
-    254,
+    255,
     255,
     255,
     0,
@@ -590,8 +590,8 @@
     0,
     61,
     0,
-    0,
-    0,
+    255,
+    255,
     201,
     128,
     128
@@ -689,7 +689,7 @@
       "lapse": 6.5
      },
      "mid": {
-      "depth": 2540.0,
+      "depth": null,
       "capTheta": null,
       "capRh": null,
       "shearDir": 0.0,
@@ -709,8 +709,8 @@
     },
     "node": {
      "convCape": 0.0,
-     "convBase": 0.0,
-     "convTop": 0.0,
+     "convBase": null,
+     "convTop": null,
      "cruiseRhi": null,
      "cruiseU": null,
      "cruiseV": null
@@ -724,7 +724,7 @@
     0,
     0,
     130,
-    254,
+    255,
     255,
     255,
     0,
@@ -739,8 +739,8 @@
     255,
     255,
     0,
-    0,
-    0,
+    255,
+    255,
     255,
     255,
     255
@@ -858,8 +858,8 @@
     },
     "node": {
      "convCape": 0.0,
-     "convBase": 0.0,
-     "convTop": 0.0,
+     "convBase": null,
+     "convTop": null,
      "cruiseRhi": 0.255,
      "cruiseU": 0.0,
      "cruiseV": 0.0
@@ -888,8 +888,8 @@
     0,
     111,
     0,
-    0,
-    0,
+    255,
+    255,
     51,
     128,
     128
@@ -987,16 +987,16 @@
       "lapse": null
      },
      "mid": {
-      "depth": 2280.0,
-      "capTheta": 0.0,
-      "capRh": 0.0,
+      "depth": null,
+      "capTheta": null,
+      "capRh": null,
       "shearDir": 69.17647058823529,
       "shear": 8.4,
       "wind": 39.0,
       "lapse": 6.4
      },
      "high": {
-      "depth": 2540.0,
+      "depth": null,
       "capTheta": null,
       "capRh": null,
       "shearDir": 48.0,
@@ -1007,8 +1007,8 @@
     },
     "node": {
      "convCape": 0.0,
-     "convBase": 0.0,
-     "convTop": 0.0,
+     "convBase": null,
+     "convTop": null,
      "cruiseRhi": 1.035,
      "cruiseU": 28.0,
      "cruiseV": 50.0
@@ -1022,14 +1022,14 @@
     255,
     255,
     255,
-    228,
-    0,
-    0,
+    255,
+    255,
+    255,
     49,
     42,
     78,
     128,
-    254,
+    255,
     255,
     255,
     34,
@@ -1037,8 +1037,8 @@
     102,
     141,
     0,
-    0,
-    0,
+    255,
+    255,
     207,
     156,
     178
@@ -1160,8 +1160,8 @@
     },
     "node": {
      "convCape": 0.0,
-     "convBase": 0.0,
-     "convTop": 0.0,
+     "convBase": null,
+     "convTop": null,
      "cruiseRhi": 0.265,
      "cruiseU": 6.0,
      "cruiseV": -10.0
@@ -1190,8 +1190,8 @@
     18,
     125,
     0,
-    0,
-    0,
+    255,
+    255,
     53,
     134,
     118

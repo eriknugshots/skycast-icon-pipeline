@@ -19,8 +19,12 @@ DECK_BANDS_KM = {"low": (0.3, 2.5), "mid": (2.5, 6.5), "high": (6.5, 13.0)}
 DECK_CLUES = ("depth", "capTheta", "capRh", "shearDir", "shear", "wind", "lapse")
 NODE_CLUES = ("convCape", "convBase", "convTop", "cruiseRhi", "cruiseU", "cruiseV")
 
-# name -> (scale, offset): byte = round(value * scale + offset). Units in the
-# comments; decode is (byte - offset) / scale.
+# name -> (scale, offset). ROUNDING RULE (the JS twin must match exactly):
+#   byte = clamp(floor(value * scale + offset + 0.5), 0, 254)   [half UP, not
+#   Python's half-to-even]; byte = 255 only when the value is missing (None,
+#   NaN or inf). cruiseU/V add their +128 offset BEFORE rounding. Example:
+#   wind 1.25 m/s -> 1.25 * 2 = 2.5 -> byte 3. Decode is (byte - offset) / scale.
+# Units in the comments.
 CLUE_LAYOUT = {
     "depth": (0.1, 0.0),          # moist-layer depth, m
     "capTheta": (10.0, 0.0),      # theta jump above the layer top, K
@@ -30,8 +34,8 @@ CLUE_LAYOUT = {
     "wind": (2.0, 0.0),           # m/s
     "lapse": (20.0, 0.0),         # K/km
     "convCape": (0.25, 0.0),      # J/kg (CAPE_CON)
-    "convBase": (20.0, 0.0),      # km MSL; 0 = no convection
-    "convTop": (20.0, 0.0),       # km MSL; 0 = no convection
+    "convBase": (20.0, 0.0),      # km MSL; 255 = none/missing
+    "convTop": (20.0, 0.0),       # km MSL; 255 = none/missing
     "cruiseRhi": (200.0, 0.0),    # max RH(ice), fraction, 300-200 hPa
     "cruiseU": (1.0, 128.0),      # m/s at 250 hPa
     "cruiseV": (1.0, 128.0),
@@ -40,7 +44,10 @@ MISSING = 255
 N_BYTES = 3 * len(DECK_CLUES) + len(NODE_CLUES)
 
 MOIST_RH = 90.0        # % over ice (below 0 C) or over water
-CAP_WINDOW_M = 1500.0  # "just above" the layer top
+# GUESS, like DECK_BANDS_KM: the air above the layer top that capTheta/capRh
+# look at (and the air below it that sets the background gradient). Chosen by
+# eye on synthetic columns; tune against real columns before trusting cap values.
+CAP_WINDOW_M = 1500.0
 SUBSTEPS = 20          # fine-grid points per pressure interval
 CRUISE_P = (200.0, 300.0)
 CRUISE_WIND_P = 250.0
@@ -55,25 +62,26 @@ def rh_water_to_ice(rhw_pct, t_c):
 
 
 def _fine(profile):
-    """Fine grid, linear in ln p between levels (so gh is linear in ln p too).
-    A segment with a NaN end level is NaN. Returns dict of equal-length arrays
-    ordered from the ground up."""
+    """Fine grid, linear in ln p (so gh is linear in ln p too). Thermodynamic
+    fields (t, rh, gh) use only the levels where all three are valid; wind (u, v)
+    uses only the levels where both are valid, so a missing wind never changes
+    moisture or depth. Interpolation spans dropped levels; outside the valid
+    range it is NaN. Returns equal-length arrays ordered from the ground up."""
     p = np.asarray(profile["p"], dtype=float)
     order = np.argsort(-p)  # descending pressure = ascending height
     p = p[order]
     fields = {k: np.asarray(profile[k], dtype=float)[order] for k in ("t", "rh", "gh", "u", "v")}
     x = -np.log(p)
-    xs, outs = [], {k: [] for k in fields}
-    for i in range(len(p) - 1):
-        t = np.linspace(0.0, 1.0, SUBSTEPS, endpoint=False)
-        xs.append(x[i] + t * (x[i + 1] - x[i]))
-        for k, f in fields.items():
-            outs[k].append(f[i] * (1 - t) + f[i + 1] * t)
-    xs.append(x[-1:])
-    for k, f in fields.items():
-        outs[k].append(f[-1:])
-    xs = np.concatenate(xs)
-    g = {k: np.concatenate(v) for k, v in outs.items()}
+    xs = [x[i] + np.linspace(0.0, 1.0, SUBSTEPS, endpoint=False) * (x[i + 1] - x[i])
+          for i in range(len(p) - 1)]
+    xs = np.concatenate(xs + [x[-1:]])
+    th = np.isfinite(fields["t"]) & np.isfinite(fields["rh"]) & np.isfinite(fields["gh"])
+    wd = np.isfinite(fields["u"]) & np.isfinite(fields["v"])
+    g = {}
+    for k in ("t", "rh", "gh", "u", "v"):
+        m = th if k in ("t", "rh", "gh") else wd
+        g[k] = (np.interp(xs, x[m], fields[k][m], left=np.nan, right=np.nan)
+                if m.sum() >= 2 else np.full(len(xs), np.nan))
     g["p"] = np.exp(-xs)
     tk = g["t"] + 273.15
     g["theta"] = tk * (1000.0 / g["p"]) ** 0.2857
@@ -89,8 +97,9 @@ def _nan_deck():
 def _deck(g, lo_km, hi_km):
     out = _nan_deck()
     gh = g["gh"]
-    ok = ~np.isnan(gh) & ~np.isnan(g["t"]) & ~np.isnan(g["effrh"]) \
-        & ~np.isnan(g["u"]) & ~np.isnan(g["v"])
+    ok = ~np.isnan(gh) & ~np.isnan(g["t"]) & ~np.isnan(g["effrh"])  # thermo only
+    wok = ~np.isnan(g["u"]) & ~np.isnan(g["v"])
+    valid_idx = np.nonzero(ok)[0]
     inband = ok & (gh >= lo_km * 1000.0) & (gh <= hi_km * 1000.0)
     if not inband.any():
         return out
@@ -119,15 +128,21 @@ def _deck(g, lo_km, hi_km):
         seg = idx            # no layer: shear/wind/lapse describe the whole band
     else:
         a, b, _ = best
-        out["depth"] = float(gh[b] - gh[a])
+        # A run that touches the first or last valid point of the whole profile
+        # could continue past what we can see: depth and cap are then unknown
+        # (stay NaN = 255). A run that merely meets the deck-band edge with valid
+        # data beyond it is reported at its in-band depth.
+        truncated = a <= valid_idx[0] or b >= valid_idx[-1]
         seg = np.arange(a, b + 1)
         if len(seg) < 2:
             seg = idx
+        if not truncated:
+            out["depth"] = float(gh[b] - gh[a])
         # Cap: look up to CAP_WINDOW_M above the layer top, using any valid data
         # (the cap may sit above the band).
         layer_rh = min(100.0, float(np.max(g["effrh"][a:b + 1])))
         above = ok & (gh > gh[b]) & (gh <= gh[b] + CAP_WINDOW_M)
-        if above.any():
+        if above.any() and not truncated:
             k = np.nonzero(above)[0]
             # Ordinary stability would add theta anyway, so the jump is what is
             # left after taking off the background gradient, measured over the
@@ -147,12 +162,16 @@ def _deck(g, lo_km, hi_km):
 
     lo, hi = seg[0], seg[-1]
     dz = (gh[hi] - gh[lo]) / 1000.0
-    out["wind"] = float(np.mean(np.hypot(g["u"][seg], g["v"][seg])))
     if dz > 0:
-        du, dv = g["u"][hi] - g["u"][lo], g["v"][hi] - g["v"][lo]
-        out["shear"] = float(math.hypot(du, dv) / dz)
-        out["shearDir"] = float(math.degrees(math.atan2(du, dv)) % 360.0)  # toward, from north
         out["lapse"] = float((g["t"][lo] - g["t"][hi]) / dz)
+    ws = seg[wok[seg]]
+    if ws.size:
+        out["wind"] = float(np.mean(np.hypot(g["u"][ws], g["v"][ws])))
+        wz = (gh[ws[-1]] - gh[ws[0]]) / 1000.0
+        if wz > 0:
+            du, dv = g["u"][ws[-1]] - g["u"][ws[0]], g["v"][ws[-1]] - g["v"][ws[0]]
+            out["shear"] = float(math.hypot(du, dv) / wz)
+            out["shearDir"] = float(math.degrees(math.atan2(du, dv)) % 360.0)  # toward, from north
     return out
 
 
@@ -176,7 +195,8 @@ def node_clues(profile):
     out["convCape"] = single("cape_con")
     for key, name in (("hbas_con", "convBase"), ("htop_con", "convTop")):
         h = single(key)
-        out[name] = h if math.isnan(h) else (0.0 if h < 0 else h / 1000.0)
+        # -500 = the model has no convection here: missing, not a 0 km height.
+        out[name] = float("nan") if (math.isnan(h) or h < 0) else h / 1000.0
 
     cr = (p >= CRUISE_P[0]) & (p <= CRUISE_P[1])
     rhi = rh_water_to_ice(rh[cr], t[cr])
@@ -191,10 +211,10 @@ def node_clues(profile):
 
 
 def _byte(name, val):
-    if val is None or (isinstance(val, float) and math.isnan(val)):
+    if val is None or not np.isfinite(val):
         return MISSING
     scale, off = CLUE_LAYOUT[name]
-    return int(min(254, max(0, round(val * scale + off))))
+    return int(min(254, max(0, math.floor(float(val) * scale + off + 0.5))))
 
 
 def encode_clues(deck, node):

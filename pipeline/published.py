@@ -19,7 +19,16 @@
 # The next build lists the recorded runs older than its own in its manifest as
 # historyRuns: [{runMs, publishedMs}, ...] ascending. Readers that predate the
 # key ignore it; a run with no entry (published before this file existed, or a
-# lost state) is simply absent and the reader falls back to its own rule.
+# lost state) is simply absent.
+#
+# SINCE. The file also keeps "since": the time of the first record it holds
+# (set by the first record() that finds none, so for a file that predates the
+# key it is that later moment — never earlier than the truth). The manifest
+# carries it as historyRecordSinceMs. Every run begun at or after it went out,
+# if at all, while this record was being kept, so a run that new with no entry
+# never went out through a successful publish (the Blob step failed, or the
+# stamp did): a reader treats it as not out. An older run with no entry may
+# simply predate the record, and the reader falls back to its own rule.
 import datetime as dt
 import json
 import sys
@@ -32,6 +41,7 @@ from .history import KEEP_RUNS
 KEEP_RECORDS = KEEP_RUNS + 2
 
 FILE = "published.json"
+SINCE = "since"
 _EPOCH = dt.datetime(1970, 1, 1, tzinfo=dt.timezone.utc)
 
 
@@ -72,17 +82,31 @@ def load(state):
     return out
 
 
+def since(state):
+    """When the record began (see the header), or None: no file, no key, or
+    an unreadable one."""
+    try:
+        v = json.loads(_path(state).read_text()).get(SINCE)
+    except Exception:
+        return None
+    return v if isinstance(v, int) and not isinstance(v, bool) and v > 0 else None
+
+
 def record(state, run_ms, published_ms):
     """Note that run `run_ms` (epoch ms) went out at `published_ms`; a later
     time replaces an earlier one (see the header), and only the KEEP_RECORDS
-    newest runs are kept."""
+    newest runs are kept. The first record without a "since" sets it to
+    `published_ms`."""
     times = load(state)
+    began = since(state) if times else None
     rid = _run_id(run_ms)
     times[rid] = max(times.get(rid, 0), int(published_ms))
     keep = sorted(times)[-KEEP_RECORDS:]
+    out = {k: times[k] for k in keep}
+    out[SINCE] = began if began is not None else int(published_ms)
     p = _path(state)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps({k: times[k] for k in keep}, separators=(",", ":"), sort_keys=True))
+    p.write_text(json.dumps(out, separators=(",", ":"), sort_keys=True))
 
 
 def history_runs(state, run):

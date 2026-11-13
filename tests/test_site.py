@@ -85,3 +85,6 @@ def test_history_runs_are_listed_only_when_given():
     m = json.loads(build_manifest(run, run, [1], ["N40W125"], 0, history_runs=runs))
     assert m["historyRuns"] == runs
     assert json.loads(build_manifest(run, run, [1], ["N40W125"], 0, history_runs=[]))["historyRuns"] == []
+    assert "historyRecordSinceMs" not in m                # unknown: no key
+    s = json.loads(build_manifest(run, run, [1], ["N40W125"], 0, history_runs=runs, history_since_ms=7))
+    assert s["historyRecordSinceMs"] == 7

@@ -224,11 +224,13 @@ def build(model, run, out_dir, get, now, state, sleep=time.sleep, steps=None):
     thickness = build_thick(model, run, out_dir, get, sleep, names)
     try:
         hist_runs = published.history_runs(state, run)
+        hist_since = published.since(state)
     except Exception as e:
         print(f"::warning::publication times unreadable, listing none: {type(e).__name__}: {e}")
-        hist_runs = []
+        hist_runs, hist_since = [], None
     m = json.loads(build_manifest(run, now, hours, names, len(past_hours), steps is None, tail=tail,
-                                  blocks=blocks_path(run), thick=thickness, history_runs=hist_runs))
+                                  blocks=blocks_path(run), thick=thickness, history_runs=hist_runs,
+                                  history_since_ms=hist_since))
     for k in ("columns",) + (() if thickness else ("thick",)):
         m.pop(k, None)
     m["model"] = model.name

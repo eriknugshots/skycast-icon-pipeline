@@ -107,6 +107,7 @@ def test_history_gfs(small, tmp_path):
     assert man["stepsMs"][:history.HEAD_STEPS] == [(base + i) * 3600 * 1000 for i in range(history.HEAD_STEPS)]
     assert len(man["stepsMs"]) == history.HEAD_STEPS + len(m.main_steps)
     assert man["historyRuns"] == []                    # no publication recorded yet
+    assert "historyRecordSinceMs" not in man
 
 
 def test_history_runs_from_the_recorded_publications(small, tmp_path):
@@ -119,6 +120,7 @@ def test_history_runs_from_the_recorded_publications(small, tmp_path):
     gb.build(m, RUN, tmp_path / "o", _get, NOW, state, sleep=lambda s: None)
     man = json.loads((tmp_path / "o" / "manifest.json").read_text())
     assert man["historyRuns"] == [{"runMs": earlier, "publishedMs": earlier + 5 * 3600 * 1000}]
+    assert man["historyRecordSinceMs"] == earlier + 5 * 3600 * 1000
 
 
 def test_history_aifs(small, tmp_path):

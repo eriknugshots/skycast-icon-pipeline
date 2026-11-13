@@ -31,7 +31,7 @@ def thick_path(run):
 
 
 def build_manifest(run, built, step_hours, squares, history_hours, complete=True, tail=None, columns=None,
-                   blocks=None, thick=None, repairs=0, history_runs=None):
+                   blocks=None, thick=None, repairs=0, history_runs=None, history_since_ms=None):
     out = {
         "run": run_iso(run),
         # False for a test build (some steps, some squares). Only a complete
@@ -74,4 +74,8 @@ def build_manifest(run, built, step_hours, squares, history_hours, complete=True
     if history_runs is not None:
         out["historyRuns"] = [{"runMs": int(r["runMs"]), "publishedMs": int(r["publishedMs"])}
                               for r in history_runs]
+    # When that record began (published.since): a run begun at or after it
+    # with no entry above never went out. Absent when unknown.
+    if history_since_ms is not None:
+        out["historyRecordSinceMs"] = int(history_since_ms)
     return json.dumps(out, separators=(",", ":"))

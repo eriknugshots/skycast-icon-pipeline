@@ -8,7 +8,8 @@
 // <folder>/<run>/ — the ones a manifest names; prune.mjs is the source of truth)
 // are uploaded first — their paths never change, so they are cached for a year — and
 // manifest.json LAST, cached 60 s, so no phone ever reads a manifest whose
-// squares are not there yet. Then every folder but the new manifest's and the
+// squares are not there yet. The manifest goes up stamped with publishedMs, the
+// moment it went live (stamp.mjs). Then every folder but the new manifest's and the
 // previous manifest's is deleted (prune.mjs): a phone that read the old
 // manifest a moment ago is still fetching its squares. The deletes are paced
 // (sweep.mjs) and a failure among them does NOT fail the publish: the new
@@ -29,6 +30,7 @@ import { planRoots } from './roots.mjs';
 import { createRetry, paceDelay, filesToSend } from './pace.mjs';
 import { pruneOldRuns, DELETES_PER_SEC } from './sweep.mjs';
 import { listAll as listStore, readManifest } from './store.mjs';
+import { stampManifest } from './stamp.mjs';
 
 const YEAR_S = 365 * 24 * 3600;
 const MANIFEST_S = 60;            // Blob's shortest cache time
@@ -96,7 +98,8 @@ async function main() {
   console.log(`uploaded ${send.length} files, ${(bytes / 1e6).toFixed(0)} MB in ${((Date.now() - t0) / 1000).toFixed(0)} s (`
     + dirs.map((d) => `${d}: ${countByDir[d]} files, ${(bytesByDir[d] / 1e6).toFixed(0)} MB`).join('; ') + ')');
 
-  await retry('manifest.json', async () => put('manifest.json', await readFile(join(manifestDir, 'manifest.json')), {
+  // publishedMs: the moment it goes live (stamp.mjs), stamped on each attempt.
+  await retry('manifest.json', async () => put('manifest.json', stampManifest(await readFile(join(manifestDir, 'manifest.json')), Date.now()), {
     access: 'public', addRandomSuffix: false, allowOverwrite: true,
     cacheControlMaxAge: MANIFEST_S, contentType: 'application/json',
   }));

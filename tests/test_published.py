@@ -21,7 +21,8 @@ def test_record_and_list_older_runs(tmp_path):
     published.record(tmp_path, ms(RUN), ms(RUN) + 4 * H)
     assert json.loads((tmp_path / published.FILE).read_text()) == {
         "2026111206": ms(RUN) - 12 * H + 4 * H, "2026111212": ms(RUN) - 6 * H + int(3.9 * H),
-        "2026111218": ms(RUN) + 4 * H}
+        "2026111218": ms(RUN) + 4 * H,
+        "since": ms(RUN) - 12 * H + 4 * H}     # the first record's time
     # Only the runs older than the one being built: its own is the live manifest's.
     assert published.history_runs(tmp_path, RUN) == [
         {"runMs": ms(RUN) - 12 * H, "publishedMs": ms(RUN) - 8 * H},
@@ -65,6 +66,33 @@ def test_absent_or_broken_record_is_no_times(tmp_path):
     # A broken record is replaced, not a reason to fail.
     published.record(tmp_path, ms(RUN), ms(RUN) + H)
     assert set(published.load(tmp_path)) == {"2026111212", "2026111218"}
+
+
+def test_since_is_the_first_records_time_and_never_moves(tmp_path):
+    assert published.since(tmp_path) is None                # no file
+    published.record(tmp_path, ms(RUN), ms(RUN) + 4 * H)
+    assert published.since(tmp_path) == ms(RUN) + 4 * H
+    published.record(tmp_path, ms(RUN) + 6 * H, ms(RUN) + 10 * H)
+    published.record(tmp_path, ms(RUN), ms(RUN) + 11 * H)   # a repair moves the run's time, not since
+    assert published.since(tmp_path) == ms(RUN) + 4 * H
+    # load() and history_runs() never read it as a run.
+    assert set(published.load(tmp_path)) == {"2026111218", "2026111300"}
+
+
+def test_a_record_that_predates_since_gets_it_at_its_next_write(tmp_path):
+    # Files written before the key existed: since becomes that next moment,
+    # later than the truth, so fewer runs read as covered (never more).
+    (tmp_path / published.FILE).write_text(json.dumps({"2026111212": ms(RUN) - 2 * H}))
+    assert published.since(tmp_path) is None
+    published.record(tmp_path, ms(RUN), ms(RUN) + 4 * H)
+    assert published.since(tmp_path) == ms(RUN) + 4 * H
+    assert published.load(tmp_path) == {"2026111212": ms(RUN) - 2 * H, "2026111218": ms(RUN) + 4 * H}
+
+
+def test_a_broken_since_is_none(tmp_path):
+    for bad in ('{"since": "soon"}', '{"since": -5}', '{"since": true}', "{not json", "[]"):
+        (tmp_path / published.FILE).write_text(bad)
+        assert published.since(tmp_path) is None
 
 
 def test_cli_records_the_manifests_run_now(tmp_path):

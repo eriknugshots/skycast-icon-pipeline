@@ -802,3 +802,5 @@ def test_history_runs_go_in_both_manifests(tmp_path):
     want = [{"runMs": prev_ms, "publishedMs": prev_ms + 4 * 3600000}]
     assert json.loads((site / "manifest.json").read_text())["historyRuns"] == want
     assert json.loads((blob / "manifest.json").read_text())["historyRuns"] == want
+    for d in (site, blob):
+        assert json.loads((d / "manifest.json").read_text())["historyRecordSinceMs"] == prev_ms + 4 * 3600000

@@ -215,9 +215,10 @@ def build(site, state, work, deps, pages_base, steps=None, squares=None, workers
     n_past = len(past)
     try:
         hist_runs = published.history_runs(state, run)
+        hist_since = published.since(state)
     except Exception as e:
         print(f"::warning::publication times unreadable, listing none: {type(e).__name__}: {e}")
-        hist_runs = []
+        hist_runs, hist_since = [], None
     # The day blocks go to Blob only, in QUANT_STEP steps even when Pages had
     # to fall back to 4 %: their size is Blob's to carry, not Pages' budget.
     blob.mkdir(parents=True, exist_ok=True)
@@ -227,12 +228,13 @@ def build(site, state, work, deps, pages_base, steps=None, squares=None, workers
     past.clear()
     # Pages carries none of the columns, blocks or thickness, so its manifest names none.
     (site / "manifest.json").write_text(site_manifest(run, deps.now(), hours, names, n_past, full, tail, None,
-                                                      repairs=repairs, history_runs=hist_runs))
+                                                      repairs=repairs, history_runs=hist_runs,
+                                                      history_since_ms=hist_since))
     thickness = build_thick(blob, state, work, deps, kit, run, steps, names, workers, hours)
     cols = build_columns(blob, state, work, deps, kit, run, steps, names, workers)
     (blob / "manifest.json").write_text(site_manifest(run, deps.now(), hours, names, n_past, full, tail, cols,
                                                       blocks=site_blocks(run), thick=thickness, repairs=repairs,
-                                                      history_runs=hist_runs))
+                                                      history_runs=hist_runs, history_since_ms=hist_since))
     print(f"built {len(names)} squares, {len(hours)} steps ({n_past} history)")
     return BUILT
 
@@ -266,9 +268,9 @@ def site_blocks(run):
 
 
 def site_manifest(run, built, hours, names, history_steps, complete, tail=None, columns=None,
-                  blocks=None, thick=None, repairs=0, history_runs=None):
+                  blocks=None, thick=None, repairs=0, history_runs=None, history_since_ms=None):
     return site.build_manifest(run, built, hours, names, history_steps, complete, tail, columns, blocks, thick,
-                               repairs, history_runs=history_runs)
+                               repairs, history_runs=history_runs, history_since_ms=history_since_ms)
 
 
 def write_blocks(blob_dir, run, names, stacks, hours):

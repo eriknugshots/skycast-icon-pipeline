@@ -3,9 +3,14 @@ name: texdev
 # 12 US-West squares of the newest ICON run (texdev_build.py), published under
 # texdev/ in the ICON feed's Blob store and nowhere else.
 #
-# Run by hand only (Actions → texdev → Run workflow, branch cloud-texture);
-# every dispatch spends Actions minutes and Blob storage. It never runs on a
-# schedule or a push, refuses any branch but cloud-texture, and:
+# Runs four times a day after each ICON run's files are out (Erik, 2026-11-13:
+# "if its cheap we can run it all the time" — priced at under $1 a month for
+# the 12 test squares: 25 uploads a run, ~31 MB stored, old run deleted), and
+# by hand (Actions → texdev → Run workflow, branch cloud-texture). A scheduled
+# run fires from the default branch, so it checks out the cloud-texture
+# branch's code; texdev_build.py exits 3 (nothing to do) when the newest run
+# is already built. It never runs on a push, refuses a hand run on any branch
+# but cloud-texture, and:
 #  - publishes with publish/texdev.mjs, which uploads and deletes only under
 #    texdev/ (never blob.mjs: that writes the live manifest.json and prunes
 #    every folder the live manifest does not name);
@@ -14,6 +19,9 @@ name: texdev
 #    never read or overwrite the live build's state.
 on:
   workflow_dispatch:
+  schedule:
+    # ICON runs 00/06/12/18Z; the live build lands 3-5 h after each.
+    - cron: "40 5,11,17,23 * * *"
 permissions:
   contents: write   # the state-texdev push
 concurrency:
@@ -27,12 +35,16 @@ jobs:
       - name: refuse unless on cloud-texture
         env:
           REF: ${{ github.ref }}
+          EVENT: ${{ github.event_name }}
         run: |
-          if [ "$REF" != "refs/heads/cloud-texture" ]; then
+          if [ "$EVENT" != "schedule" ] && [ "$REF" != "refs/heads/cloud-texture" ]; then
             echo "::error::texdev runs only on the cloud-texture branch (got '$REF')"
             exit 1
           fi
       - uses: actions/checkout@v5
+        with:
+          # A scheduled run starts on the default branch: build the texture branch's code.
+          ref: ${{ github.event_name == 'schedule' && 'cloud-texture' || github.ref }}
       - name: install cdo (as build.yml does)
         run: |
           wget -qO mm https://micro.mamba.pm/api/micromamba/linux-64/latest

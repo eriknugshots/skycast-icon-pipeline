@@ -98,8 +98,9 @@ async function main() {
   console.log(`uploaded ${send.length} files, ${(bytes / 1e6).toFixed(0)} MB in ${((Date.now() - t0) / 1000).toFixed(0)} s (`
     + dirs.map((d) => `${d}: ${countByDir[d]} files, ${(bytesByDir[d] / 1e6).toFixed(0)} MB`).join('; ') + ')');
 
-  // publishedMs: the moment it goes live (stamp.mjs), stamped on each attempt.
-  await retry('manifest.json', async () => put('manifest.json', stampManifest(await readFile(join(manifestDir, 'manifest.json')), Date.now()), {
+  // publishedMs (or, on a copy of a live manifest, republishedMs): when every
+  // reader has it — now plus the 60 s cache (stamp.mjs), stamped on each attempt.
+  await retry('manifest.json', async () => put('manifest.json', stampManifest(await readFile(join(manifestDir, 'manifest.json')), Date.now(), MANIFEST_S * 1000), {
     access: 'public', addRandomSuffix: false, allowOverwrite: true,
     cacheControlMaxAge: MANIFEST_S, contentType: 'application/json',
   }));

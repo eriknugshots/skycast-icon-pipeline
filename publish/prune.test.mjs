@@ -108,3 +108,9 @@ test('fog folders are named by the manifest and kept for current and previous', 
   assert.deepEqual(pathsToDelete(paths, { current: c, previous: p }), ['fog/Z/N44W122/0.icc']);
   assert.deepEqual(pathsToDelete(['fog/A/N44W122/0.icc'], { current: { tiles: 'tiles/B', fog: { tiles: 'fog/B' } }, previous: { fog: { tiles: 'fog/A' } } }), []);
 });
+
+test('texdev/ is never pruned, by the publish or by the backlog sweep', () => {
+  const paths = ['manifest.json', 'tiles/a/x.icl', 'texdev/2026111206/N40W125.icu', 'texdev/manifest.json'];
+  assert.deepEqual(pathsToDelete(paths, { current: { tiles: 'tiles/b' }, previous: null }), ['tiles/a/x.icl']);
+  assert.deepEqual(backlogToDelete(['tiles/a/x.icl', 'tiles/b/x.icl', 'texdev/2026111206/N40W125.icu', 'texdev/2026111200/N40W125.icu'], { tiles: 'tiles/b' }), []);
+});

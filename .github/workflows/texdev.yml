@@ -1,0 +1,103 @@
+name: texdev
+# The cloud-texture dev feed: upper air (ICU1) and texture clues (ICX1) for the
+# 12 US-West squares of the newest ICON run (texdev_build.py), published under
+# texdev/ in the ICON feed's Blob store and nowhere else.
+#
+# Run by hand only (Actions → texdev → Run workflow, branch cloud-texture);
+# every dispatch spends Actions minutes and Blob storage. It never runs on a
+# schedule or a push, refuses any branch but cloud-texture, and:
+#  - publishes with publish/texdev.mjs, which uploads and deletes only under
+#    texdev/ (never blob.mjs: that writes the live manifest.json and prunes
+#    every folder the live manifest does not name);
+#  - keeps its 60 h of upper-air history on its own orphan branch,
+#    state-texdev (as build.yml keeps the live feed's on `state`), so it can
+#    never read or overwrite the live build's state.
+on:
+  workflow_dispatch:
+permissions:
+  contents: write   # the state-texdev push
+concurrency:
+  group: texdev
+  cancel-in-progress: false
+jobs:
+  texdev:
+    runs-on: ubuntu-24.04   # pinned, as build.yml
+    timeout-minutes: 150
+    steps:
+      - name: refuse unless on cloud-texture
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          if [ "$REF" != "refs/heads/cloud-texture" ]; then
+            echo "::error::texdev runs only on the cloud-texture branch (got '$REF')"
+            exit 1
+          fi
+      - uses: actions/checkout@v5
+      - name: install cdo (as build.yml does)
+        run: |
+          wget -qO mm https://micro.mamba.pm/api/micromamba/linux-64/latest
+          tar -xj -f mm bin/micromamba
+          ./bin/micromamba create -y -q -p /tmp/cdo -c conda-forge cdo
+          echo "/tmp/cdo/bin" >> "$GITHUB_PATH"
+          export PATH="/tmp/cdo/bin:$PATH"
+          command -v cdo && cdo -V 2>&1 | head -1
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.12" }
+      - run: pip install -r requirements.txt
+      - run: python -m pytest -q
+      - name: fetch state (texdev history; absent on the first run)
+        id: state
+        # As build.yml: a branch that exists but cannot be fetched is never
+        # overwritten by a near-empty state (keep=1).
+        run: |
+          set +e
+          git ls-remote --exit-code --heads origin state-texdev >/dev/null 2>&1
+          ls=$?
+          set -e
+          if [ "$ls" = "2" ]; then
+            mkdir -p state-texdev
+          else
+            for i in 1 2 3; do git fetch --depth 1 origin state-texdev && break; sleep $((i * 10)); done
+            if git rev-parse -q --verify origin/state-texdev >/dev/null; then
+              git worktree add state-texdev origin/state-texdev
+            else
+              echo "::warning::state-texdev could not be fetched (ls-remote $ls) — building without history, keeping the saved state"
+              mkdir -p state-texdev
+              echo "keep=1" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+      - name: build
+        id: build
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: |
+          set +e
+          python texdev_build.py --out-dir blob-texdev --state-dir state-texdev --work-dir work
+          rc=$?
+          set -e
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          if [ "$rc" = "3" ]; then echo "nothing to do"; elif [ "$rc" != "0" ]; then exit "$rc"; fi
+          du -sh blob-texdev state-texdev 2>/dev/null || true
+      - uses: actions/setup-node@v5
+        if: steps.build.outputs.rc == '0'
+        with: { node-version: "22" }
+      - name: publish texdev/ to Vercel Blob
+        if: steps.build.outputs.rc == '0'
+        env:
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+        run: |
+          cd publish
+          npm ci --no-audit --no-fund
+          node --test
+          node texdev.mjs ../blob-texdev
+      - name: publish state (orphan force-push to state-texdev)
+        if: steps.build.outputs.rc == '0' && steps.state.outputs.keep != '1'
+        run: |
+          cd state-texdev
+          rm -rf .git
+          git init -b state-texdev -q
+          git -c user.name=pipeline -c user.email=pipeline@users.noreply.github.com add -A
+          git -c user.name=pipeline -c user.email=pipeline@users.noreply.github.com commit -q -m "texdev state $(date -u +%Y%m%dT%H%MZ)"
+          git push --force "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" state-texdev
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

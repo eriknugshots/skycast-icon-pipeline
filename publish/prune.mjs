@@ -20,10 +20,15 @@ export function manifestFolders(m) {
   return out;
 }
 
-/** Pathnames to delete: everything but manifest.json and the kept folders. */
+// Folders the live publish never owns: texdev/ is the cloud-texture dev feed
+// (texdev.yml + publish/texdev.mjs), which prunes its own runs.
+export const PROTECTED_PREFIXES = ['texdev/'];
+export const isProtected = (p) => PROTECTED_PREFIXES.some((k) => p.startsWith(k));
+
+/** Pathnames to delete: everything but manifest.json, the kept folders and PROTECTED_PREFIXES. */
 export function pathsToDelete(pathnames, { current, previous }) {
   const keep = [...manifestFolders(current), ...manifestFolders(previous)];
-  return pathnames.filter((p) => p !== 'manifest.json' && !keep.some((k) => p.startsWith(k)));
+  return pathnames.filter((p) => p !== 'manifest.json' && !isProtected(p) && !keep.some((k) => p.startsWith(k)));
 }
 
 // The one-off backlog cleanup (prune-backlog.mjs). From Nov 1 every publish's
@@ -77,7 +82,7 @@ export function backlogToDelete(pathnames, manifest) {
   }
   return pathnames.filter((p) => {
     const r = runFolder(p);
-    return r && !keep.get(r.family).has(r.run);
+    return r && !isProtected(p) && !keep.get(r.family).has(r.run);
   });
 }
 

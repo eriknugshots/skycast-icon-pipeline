@@ -84,11 +84,21 @@ def _build(tmp_path, deps, steps=(0, 1), out="out"):
                               steps=list(steps), workers=2)
 
 
-def test_texdev_squares_are_the_twelve_us_west_squares():
-    want = {square_name(lat, lon) for lat in (35, 40, 45) for lon in (-130, -125, -120, -115)}
-    assert len(want) == 12
-    assert len(texdev_build.TEXDEV_SQUARES) == 12
-    assert set(texdev_build.TEXDEV_SQUARES) == want
+def test_texdev_squares_cover_the_us_and_iceland():
+    names = set(texdev_build.TEXDEV_SQUARES)
+    assert len(texdev_build.TEXDEV_SQUARES) == len(names) == 206
+    # The twelve US-West squares every test case sits in are still there.
+    assert {square_name(lat, lon) for lat in (35, 40, 45) for lon in (-130, -125, -120, -115)} <= names
+    # A place in each part, and the sea one square off each coast.
+    for lat, lon in ((40, -75), (25, -85), (45, -70),       # New York, Florida, Maine
+                     (60, -150), (70, -160), (50, -180),    # Anchorage, the North Slope, the Aleutians
+                     (20, -160), (15, -160),                # Oahu, Hawaii island
+                     (60, -25), (65, -15),                  # Reykjavik, east Iceland
+                     (35, -130), (30, -65), (55, -30)):     # Pacific, Atlantic, the sea south-west of Iceland
+        assert square_name(lat, lon) in names
+    # Nothing past the dateline, nothing in the southern hemisphere, no Europe.
+    for n in names:
+        assert n[0] == "N" and "W" in n
 
 
 def test_upper_keys_follow_the_icu1_field_table():

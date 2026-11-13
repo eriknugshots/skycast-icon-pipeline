@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # texdev_build.py — the cloud-texture dev feed: upper air (ICU1) and texture
-# clues (ICX1) of one ICON run, for the US West squares only, under texdev/.
+# clues (ICX1) of one ICON run, for the United States and Iceland, under texdev/.
 #
 # It takes the run a normal build would (the newest whole run on DWD), waits
 # for its column and upper-air files the same way, and writes
@@ -19,12 +19,24 @@ import run_build
 from pipeline import dwd
 from pipeline.squares import square_name
 
-# The 5° squares with SW corner lat 35/40/45 and lon -130/-125/-120/-115:
-# 35-50 °N, 130-110 °W — every cloud-texture test case is in Oregon or
-# Washington.
-TEXDEV_LATS = (35, 40, 45)
-TEXDEV_LONS = (-130, -125, -120, -115)
-TEXDEV_SQUARES = [square_name(lat, lon) for lat in TEXDEV_LATS for lon in TEXDEV_LONS]
+# The United States and Iceland (Erik, 2026-11-13: "lets start with just the US
+# and iceland for now, and then build the whole world later"), as boxes of 5°
+# squares by their SW corners, each with about one square of sea or border
+# around the land: a view from the coast looks hundreds of km out to sea, and
+# the app draws no texture where a square is missing. The Aleutians west of
+# 180° are left out: one square past the dateline would stretch the build's
+# single window (run_build.square_window) round the whole globe.
+#   (lat from, lat to, lon from, lon to), SW corners, inclusive
+TEXDEV_BOXES = (
+    (15, 50, -130, -65),    # the lower 48 states
+    (50, 70, -180, -130),   # Alaska
+    (10, 25, -170, -150),   # Hawaii
+    (55, 70, -30, -10),     # Iceland
+)
+TEXDEV_SQUARES = sorted({square_name(lat, lon)
+                         for la0, la1, lo0, lo1 in TEXDEV_BOXES
+                         for lat in range(la0, la1 + 5, 5)
+                         for lon in range(lo0, lo1 + 5, 5)})
 PREFIX = "texdev"
 COLUMN_SUB = "texdev_columns"
 

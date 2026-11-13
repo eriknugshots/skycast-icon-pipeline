@@ -1,26 +1,30 @@
-# pipeline/cluefile.py — ICX1: the per-node texture clues (pipeline/clues.py,
-# 27 bytes each) of one 5° square, every time step, in one file.
+# pipeline/cluefile.py — ICX2: the per-node texture clues (pipeline/clues.py,
+# 30 bytes each) of one 5° square, every time step, in one file.
 #
-# ICX1, little-endian:
-#   18-byte header  magic "ICX1", swLat i16, swLon i16, spacing u16 (milli-
-#                   degrees), cols u16, rows u16, steps u16, clueBytes u16 (=27)
+# ICX2, little-endian:
+#   18-byte header  magic "ICX2", swLat i16, swLon i16, spacing u16 (milli-
+#                   degrees), cols u16, rows u16, steps u16, clueBytes u16 (=30)
 #   steps × u32     the steps' times as unix HOURS, ascending
-#   zlib stream     of rows·cols·steps·27 u8: node by node (row 0 the SOUTH
+#   zlib stream     of rows·cols·steps·30 u8: node by node (row 0 the SOUTH
 #                   edge, column 0 the WEST edge), each node's steps in time
-#                   order, each step's 27 clue bytes.
+#                   order, each step's 30 clue bytes.
+# ICX1 was the same file with 27 bytes a node (no windDir tail, clues.py). The
+# builder writes ICX2 only; decode_clue_square reads both.
 import struct
 import zlib
 import numpy as np
 
-from .clues import N_BYTES
+from .clues import N_BYTES, N_BYTES_V1
 
-MAGIC = b"ICX1"
+MAGIC = b"ICX2"
+FORMAT = MAGIC.decode()                       # the manifest entry's "format"
+MAGIC_BYTES = {b"ICX1": N_BYTES_V1, MAGIC: N_BYTES}   # every magic read -> bytes per node per step
 ZLIB_LEVEL = 6
 _HEADER = struct.Struct("<4shhHHHHH")   # magic, swLat, swLon, spacing mdeg, cols, rows, steps, clueBytes
 
 
 def encode_clue_square(sw_lat, sw_lon, spacing_mdeg, step_hours, clues):
-    """clues: u8 [steps][rows][cols][27]. step_hours: ascending unix hours."""
+    """clues: u8 [steps][rows][cols][30]. step_hours: ascending unix hours."""
     clues = np.asarray(clues)
     if clues.dtype != np.uint8:
         raise ValueError(f"clues must be uint8, got {clues.dtype}")
@@ -36,17 +40,19 @@ def encode_clue_square(sw_lat, sw_lon, spacing_mdeg, step_hours, clues):
 
 
 def decode_clue_square(blob):
-    """The inverse, for tests and for checking a published file: {sw_lat,
-    sw_lon, spacing_mdeg, cols, rows, step_hours, clue_bytes, clues} with
-    clues u8 [steps][rows][cols][clue_bytes]."""
+    """The inverse, for tests and for checking a published file (ICX2, or an
+    older ICX1): {format, sw_lat, sw_lon, spacing_mdeg, cols, rows, step_hours,
+    clue_bytes, clues} with clues u8 [steps][rows][cols][clue_bytes]."""
     magic, sw_lat, sw_lon, sp, cols, rows, steps, nb = _HEADER.unpack_from(blob, 0)
-    if magic != MAGIC:
-        raise ValueError("not an ICX1 file")
+    if magic not in MAGIC_BYTES:
+        raise ValueError("not an ICX1 or ICX2 file")
+    if nb != MAGIC_BYTES[magic]:
+        raise ValueError(f"{magic.decode()} with {nb} clue bytes, expected {MAGIC_BYTES[magic]}")
     off = _HEADER.size
     hours = list(struct.unpack_from(f"<{steps}I", blob, off)); off += 4 * steps
     raw = zlib.decompress(blob[off:])
     if len(raw) != rows * cols * steps * nb:
         raise ValueError(f"clue body is {len(raw)} bytes, expected {rows * cols * steps * nb}")
     arr = np.frombuffer(raw, dtype=np.uint8).reshape(rows, cols, steps, nb)
-    return {"sw_lat": sw_lat, "sw_lon": sw_lon, "spacing_mdeg": sp, "cols": cols, "rows": rows,
+    return {"format": magic.decode(), "sw_lat": sw_lat, "sw_lon": sw_lon, "spacing_mdeg": sp, "cols": cols, "rows": rows,
             "step_hours": hours, "clue_bytes": nb, "clues": np.moveaxis(arr, 2, 0)}

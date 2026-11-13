@@ -682,13 +682,13 @@ def build_columns(blob_dir, state, work, deps, kit, run, steps, names, workers, 
             "tiles": site_columns_tiles(run)}
 
 
-# ---- Upper air and texture clues (ICU1 / ICX1, docs/column-feed-design.md) --
+# ---- Upper air and texture clues (ICU1 / ICX2, docs/column-feed-design.md) --
 # The cloud-texture feed: T/RH/GH/U/V at dwd.UPPER_PLEVELS plus ICON's four
 # convection singles (ICU1, never inside ICC1 — the app's fog reads every
-# level of an ICC1 square), and per node the 27 clue bytes of pipeline/clues.py
-# (ICX1), computed from the profile ICC1 (1000-700 hPa) + ICU1 (600-200 hPa)
+# level of an ICC1 square), and per node the 30 clue bytes of pipeline/clues.py
+# (ICX2), computed from the profile ICC1 (1000-700 hPa) + ICU1 (600-200 hPa)
 # carry, as their CODES decode — so a phone computing clues from the two files
-# gets exactly the bytes ICX1 holds. ICU1 also carries U/V at the ICC1 levels
+# gets exactly the bytes ICX2 holds. ICU1 also carries U/V at the ICC1 levels
 # (dwd.UPPER_WIND_PLEVELS), so the low deck has wind, shear and shearDir.
 #
 # Built for a list of squares only (texdev_build.py: the US West). The lattice
@@ -879,7 +879,7 @@ def node_clue_bytes(col, up, rows=None):
 
 
 def clue_cubes(names, stride, window, stacks, col_by_hour):
-    """{square: u8 [hours][side][side][27]} — each node computed once, even
+    """{square: u8 [hours][side][side][30]} — each node computed once, even
     where squares share an edge."""
     local = {name: _local_nodes(name, stride, window) for name in names}
     nodes = sorted({(r, c) for rr, cc in local.values() for r in rr for c in cc})
@@ -949,7 +949,7 @@ def _tex_entry(fmt, run, hours, n_past, stride, tiles):
 
 def build_upper_and_clues(blob_dir, state, work, deps, kit, run, steps, squares, workers,
                           column_stacks=None, column_sub="columns", stride=None):
-    """The upper-air (ICU1) and clue (ICX1) files of `squares`, every step
+    """The upper-air (ICU1) and clue (ICX2) files of `squares`, every step
     with 60 h of upper history first (state/<UPPER_SUB>, history.py), under
     upper/<run>/ and clues/<run>/. The clue history is rebuilt from the upper
     history and the column history. column_stacks: the column build's
@@ -999,10 +999,10 @@ def build_upper_and_clues(blob_dir, state, work, deps, kit, run, steps, squares,
             shutil.rmtree(Path(blob_dir) / root, ignore_errors=True)
         return None, None
     print(f"upper air: {len(names)} squares, {len(hours)} steps ({len(past_up)} history), "
-          f"ICU1 {up_bytes / 1e6:.1f} MB, ICX1 {clue_bytes / 1e6:.1f} MB, {time.monotonic() - t0:.0f} s "
+          f"ICU1 {up_bytes / 1e6:.1f} MB, {cluefile.FORMAT} {clue_bytes / 1e6:.1f} MB, {time.monotonic() - t0:.0f} s "
           f"(clues {time.monotonic() - t1:.0f} s)")
     return (_tex_entry("ICU1", run, hours, len(past_up), stride, site.upper_path(run)),
-            _tex_entry("ICX1", run, hours, len(past_up), stride, site.clues_path(run)))
+            _tex_entry(cluefile.FORMAT, run, hours, len(past_up), stride, site.clues_path(run)))
 
 
 def main():

@@ -47,7 +47,8 @@ def test_missing_level_gives_255():
 def test_encode_roundtrip():
     pr = cp.thin_lid_mid()
     b = encode_clues(deck_clues(pr), node_clues(pr))
-    assert len(b) == 27 == clues.N_BYTES
+    assert len(b) == 30 == clues.N_BYTES
+    assert clues.N_BYTES_V1 == 27
     back = decode_clues(b)
     assert abs(back["decks"]["mid"]["depth"] - deck_clues(pr)["mid"]["depth"]) <= 5.0 + 1e-9
 
@@ -75,7 +76,7 @@ def test_bytes_clamp_and_dry_layer():
 def test_fixture_matches_code():
     with open(FIXTURE) as f:
         fx = json.load(f)
-    assert len(fx["profiles"]) == 8
+    assert len(fx["profiles"]) == 9
     for entry in fx["profiles"]:
         pr = {k: np.array([np.nan if x is None else x for x in v], dtype=float)
               if isinstance(v, list) else v for k, v in entry["profile"].items()}
@@ -126,3 +127,59 @@ def test_run_at_edge_of_valid_data_is_missing():
     pr2 = cp.deep_moist_mid()
     cp.at(pr2, 700.0, t=np.nan, rh=np.nan, gh=np.nan)
     assert deck_clues(pr2)["mid"]["depth"] >= 2000
+
+
+def _uniform(u, v):
+    pr = cp.deep_moist_mid()
+    pr["u"] = np.full_like(np.asarray(pr["u"], dtype=float), u)
+    pr["v"] = np.full_like(np.asarray(pr["v"], dtype=float), v)
+    return pr
+
+
+def test_wind_dir_is_where_the_mean_wind_blows_toward():
+    # shearDir's convention: degrees clockwise from north, the direction TOWARD.
+    for (u, v), want in (((12.0, 0.0), 90.0), ((0.0, -7.0), 180.0), ((-5.0, 0.0), 270.0), ((0.0, 3.0), 0.0),
+                         ((10.0, 10.0 * math.sqrt(3)), 30.0)):
+        d = deck_clues(_uniform(u, v))
+        for name in clues.DECK_NAMES:
+            assert abs(d[name]["windDir"] - want) <= 1e-9, (u, v, name)
+            assert abs(d[name]["wind"] - math.hypot(u, v)) <= 1e-9
+
+
+def test_wind_dir_missing_when_calm_or_no_wind():
+    calm = deck_clues(_uniform(0.0, 0.0))
+    none = deck_clues(_uniform(np.nan, np.nan))
+    for name in clues.DECK_NAMES:
+        assert calm[name]["wind"] == 0.0 and math.isnan(calm[name]["windDir"])
+        assert math.isnan(none[name]["wind"]) and math.isnan(none[name]["windDir"])
+    b = encode_clues(calm, node_clues(_uniform(0.0, 0.0)))
+    assert list(b[27:30]) == [255, 255, 255]
+
+
+def test_wind_dir_bytes_are_appended_after_the_27():
+    pr = cp.shear_direction()
+    deck, node = deck_clues(pr), node_clues(pr)
+    b = encode_clues(deck, node)
+    assert [b[27], b[28], b[29]] == [clues._byte("windDir", deck[n]["windDir"]) for n in clues.DECK_NAMES]
+    other = {n: dict(deck[n], windDir=x) for n, x in zip(clues.DECK_NAMES, (10.0, 100.0, 200.0))}
+    ob = encode_clues(other, node)
+    assert ob[:27] == b[:27]                      # every ICX1 offset stays where it was
+    assert list(ob[27:]) == [7, 71, 142]          # floor(deg * 255 / 360 + 0.5)
+    assert clues._byte("windDir", 359.9) == 254   # clamped: 255 stays "missing"
+    assert clues.CLUE_LAYOUT["windDir"] == clues.CLUE_LAYOUT["shearDir"]
+    back = decode_clues(ob)["decks"]
+    assert abs(back["mid"]["windDir"] - 71 * 360 / 255) <= 1e-9
+    # a 27-byte record (ICX1) decodes with no wind direction, the rest unchanged
+    v1 = decode_clues(ob[:27])
+    assert all(v1["decks"][n]["windDir"] is None for n in clues.DECK_NAMES)
+    assert {k: v for k, v in v1["decks"]["high"].items() if k != "windDir"} == \
+           {k: v for k, v in back["high"].items() if k != "windDir"}
+    assert v1["node"] == decode_clues(ob)["node"]
+
+
+def test_fixture_has_wind_directions():
+    with open(FIXTURE) as f:
+        fx = json.load(f)
+    tails = [e["bytes"][27:] for e in fx["profiles"]]
+    assert all(len(t) == 3 for t in tails)
+    assert any(all(x != 255 for x in t) for t in tails) and any(255 in t for t in tails)

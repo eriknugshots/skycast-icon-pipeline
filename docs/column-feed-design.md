@@ -392,10 +392,16 @@ same unix-ms list). The live build does not call it.
   SINGLE). 48 fields, every one per step. FI is converted to metres with the
   columns' g, and the build fails (never clips) unless every GH at 600–200 hPa
   lies in 3,000–17,000 m.
-- **ICX1** (`pipeline/cluefile.py`): per node per step the 27 clue bytes of
+- **ICX2** (`pipeline/cluefile.py`): per node per step the 30 clue bytes of
   `pipeline/clues.py`, computed from the profile ICC1 + ICU1 hold, as their
   codes decode — so the app computing clues from those two files gets exactly
-  these bytes.
+  these bytes. Bytes 0–26 are the earlier **ICX1** record unchanged; bytes
+  27–29 are each deck's `windDir` (low, mid, high): the direction its mean
+  wind blows toward, degrees clockwise from north on shearDir's byte scale,
+  255 when the deck has no wind or its vector-mean wind is calm. With the
+  `wind` byte (mean speed) it lets the app drift the texture and point the
+  streaks along the wind from the clue file alone. The app reads both magics
+  (an ICX1 square has no wind direction); the sizes measured below are ICX1's.
 - History: 60 h of ICU1 under `state/upper` (`history.py`, split heads); the
   clue history is rebuilt from it and the column history. The lattice is
   cropped to the squares' bounding window after each remap; heads carry a

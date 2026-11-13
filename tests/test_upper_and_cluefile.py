@@ -4,8 +4,9 @@ import pytest
 from pipeline import columns
 from pipeline.columns import (encode_columns, encode_upper, decode_columns, field_spec, upper_field_spec,
                               quantize, dequantize, side, STATIC, MAGIC_UPPER)
+from pipeline import cluefile
 from pipeline.cluefile import encode_clue_square, decode_clue_square
-from pipeline.clues import N_BYTES
+from pipeline.clues import N_BYTES, N_BYTES_V1
 from pipeline.dwd import COLUMN_PLEVELS, UPPER_PLEVELS
 
 # Captured by running gh/main's own pipeline code (2f8612c, the live feed with
@@ -78,20 +79,58 @@ def test_icu1_quantisation_table():
     assert len(spec) == 5 * len(UPPER_PLEVELS) + 4
 
 
-def test_icx1_roundtrip():
+def test_icx2_roundtrip():
     steps, rows, cols = 3, 4, 5
     clues = np.random.default_rng(5).integers(0, 256, size=(steps, rows, cols, N_BYTES), dtype=np.uint8)
     hours = [700, 701, 703]
     blob = encode_clue_square(-5, 175, 250, hours, clues)
-    assert blob[:4] == b"ICX1"
-    assert struct.unpack_from("<hhHHHHH", blob, 4) == (-5, 175, 250, cols, rows, steps, 27)
+    assert blob[:4] == b"ICX2" == cluefile.MAGIC and cluefile.FORMAT == "ICX2"
+    assert N_BYTES == 30
+    assert struct.unpack_from("<hhHHHHH", blob, 4) == (-5, 175, 250, cols, rows, steps, 30)
     d = decode_clue_square(blob)
-    assert (d["sw_lat"], d["sw_lon"], d["spacing_mdeg"], d["cols"], d["rows"], d["clue_bytes"]) == (-5, 175, 250, cols, rows, 27)
+    assert d["format"] == "ICX2"
+    assert (d["sw_lat"], d["sw_lon"], d["spacing_mdeg"], d["cols"], d["rows"], d["clue_bytes"]) == (-5, 175, 250, cols, rows, 30)
     assert d["step_hours"] == hours
     assert np.array_equal(d["clues"], clues)
 
 
-def test_icx1_node_order_and_validation():
+def _icx1_blob(sw_lat, sw_lon, spacing_mdeg, hours, clues27):
+    """An ICX1 file as the builder wrote it before windDir: 27 bytes a node."""
+    import zlib
+    steps, rows, cols, nb = clues27.shape
+    assert nb == N_BYTES_V1 == 27
+    body = np.ascontiguousarray(np.moveaxis(clues27, 0, 2)).tobytes()
+    head = struct.pack("<4shhHHHHH", b"ICX1", sw_lat, sw_lon, spacing_mdeg, cols, rows, steps, 27)
+    return head + struct.pack(f"<{steps}I", *hours) + zlib.compress(body, 6)
+
+
+def test_an_older_icx1_file_is_still_read():
+    steps, rows, cols = 2, 3, 4
+    clues27 = np.random.default_rng(7).integers(0, 256, size=(steps, rows, cols, 27), dtype=np.uint8)
+    d = decode_clue_square(_icx1_blob(40, -125, 250, [900, 901], clues27))
+    assert d["format"] == "ICX1" and d["clue_bytes"] == 27
+    assert np.array_equal(d["clues"], clues27)
+    # the builder itself only ever writes the current record
+    with pytest.raises(ValueError):
+        encode_clue_square(40, -125, 250, [900, 901], clues27)
+
+
+def test_magic_and_record_size_must_agree():
+    clues30 = np.zeros((1, 2, 2, N_BYTES), np.uint8)
+    blob = bytearray(encode_clue_square(0, 0, 250, [1], clues30))
+    blob[3:4] = b"1"                              # "ICX1" over a 30-byte body
+    with pytest.raises(ValueError):
+        decode_clue_square(bytes(blob))
+    old = bytearray(_icx1_blob(0, 0, 250, [1], np.zeros((1, 2, 2, 27), np.uint8)))
+    old[3:4] = b"2"                               # "ICX2" over a 27-byte body
+    with pytest.raises(ValueError):
+        decode_clue_square(bytes(old))
+    old[0:4] = b"ICXX"
+    with pytest.raises(ValueError):
+        decode_clue_square(bytes(old))
+
+
+def test_icx2_node_order_and_validation():
     steps, rows, cols = 2, 2, 3
     clues = np.zeros((steps, rows, cols, N_BYTES), np.uint8)
     clues[1, 1, 2, 0] = 9        # step 1, row 1 (north), col 2 (east)

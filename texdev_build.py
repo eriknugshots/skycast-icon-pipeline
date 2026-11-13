@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 # texdev_build.py — the cloud-texture dev feed: upper air (ICU1) and texture
-# clues (ICX1) of one ICON run, for the United States and Iceland, under texdev/.
+# clues (ICX2) of one ICON run, for the United States and Iceland, under texdev/.
 #
 # It takes the run a normal build would (the newest whole run on DWD), waits
 # for its column and upper-air files the same way, and writes
 #   <out>/texdev/upper/<run>/<square>.icu
 #   <out>/texdev/clues/<run>/<square>.icx
 #   <out>/texdev/manifest.json   {run, runMs, builtMs, squares, upper, clues}
+# The clues entry's "format" names the files' magic ("ICX2": 30 bytes a node,
+# with each deck's wind direction; "ICX1" before it had 27). The app reads the
+# magic of each file, so a feed of either kind loads.
 # and nothing else: no cloud squares, no ICC1 columns, no live path. Its
 # history lives in its own state dir: state/upper (run_build.UPPER_SUB) and
 # state/texdev_columns (the column heads the clue history is rebuilt from).

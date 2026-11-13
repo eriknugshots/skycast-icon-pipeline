@@ -124,7 +124,7 @@ def test_the_manifest_names_upper_and_clues(tmp_path):
     root = tmp_path / "out" / "texdev"
     m = json.loads((root / "manifest.json").read_text())
     hours = [hour_of(RUN) + s for s in steps]
-    for key, fmt, ext in (("upper", "ICU1", "icu"), ("clues", "ICX1", "icx")):
+    for key, fmt, ext in (("upper", "ICU1", "icu"), ("clues", "ICX2", "icx")):
         e = m[key]
         assert {"format", "run", "runMs", "steps", "tiles"} <= set(e)
         assert e["format"] == fmt
@@ -198,6 +198,7 @@ def test_clue_bytes_match_encode_clues_on_the_node_profile(tmp_path):
     root = tmp_path / "out" / "texdev"
     d = decode_clue_square((root / f"clues/{dwd.run_id(RUN)}/N40W125.icx").read_bytes())
     assert d["step_hours"] == [hour_of(RUN) + s for s in steps]
+    assert d["format"] == "ICX2" and d["clue_bytes"] == 30
     assert d["clues"].shape == (2, 21, 21, clues.N_BYTES)
     for s in steps:
         col, up = {}, {}
@@ -226,6 +227,8 @@ def test_clue_bytes_match_encode_clues_on_the_node_profile(tmp_path):
     # With wind at 1000-700 hPa the low deck has wind, shear and its direction.
     low = clues.decode_clues(bytes(d["clues"][0, 3, 7]))["decks"]["low"]
     assert low["wind"] is not None and low["shear"] is not None and low["shearDir"] is not None
+    # ... and, in the three bytes after the ICX1 record, the direction its mean wind blows toward.
+    assert low["windDir"] is not None and d["clues"][0, 3, 7, 27] != clues.MISSING
 
 
 def test_fi_already_in_metres_fails_the_build_not_clips(tmp_path, capsys):

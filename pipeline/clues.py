@@ -1,11 +1,15 @@
-# pipeline/clues.py — texture clues: 27 bytes per forecast column that tell the
+# pipeline/clues.py — texture clues: 30 bytes per forecast column that tell the
 # phone which cloud SHAPES the air can make, read from one profile (pressure
 # levels of T, RH, height, wind) plus the model's own convection fields.
 #
 # Pure numpy, no I/O. Layout (255 = missing, bytes clamped to 0..254):
-#   3 decks (low, mid, high) x 7 bytes, then 6 node bytes = 27.
+#   3 decks (low, mid, high) x 7 bytes, then 6 node bytes, then 3 tail bytes
+#   (one per deck) = 30.
 #   deck : depth, capTheta, capRh, shearDir, shear, wind, lapse
 #   node : convCape, convBase, convTop, cruiseRhi, cruiseU, cruiseV
+#   tail : windDir of low, mid, high (bytes 27, 28, 29)
+# The tail was APPENDED (ICX2; ICX1 stopped at byte 27), so the first 27
+# offsets are the same in both.
 #
 # Profile dict: p hPa (descending), t degC, rh % over WATER (ICON RELHUM),
 # gh m (geopotential height, MSL), u, v m/s; singles cape_con, cape_ml,
@@ -18,6 +22,8 @@ DECK_NAMES = ("low", "mid", "high")
 DECK_BANDS_KM = {"low": (0.3, 2.5), "mid": (2.5, 6.5), "high": (6.5, 13.0)}
 DECK_CLUES = ("depth", "capTheta", "capRh", "shearDir", "shear", "wind", "lapse")
 NODE_CLUES = ("convCape", "convBase", "convTop", "cruiseRhi", "cruiseU", "cruiseV")
+# Per-deck clues carried AFTER the node bytes, deck by deck (low, mid, high).
+DECK_TAIL_CLUES = ("windDir",)
 
 # name -> (scale, offset). ROUNDING RULE (the JS twin must match exactly):
 #   byte = clamp(floor(value * scale + offset + 0.5), 0, 254)   [half UP, not
@@ -32,6 +38,7 @@ CLUE_LAYOUT = {
     "shearDir": (255.0 / 360.0, 0.0),  # deg, direction the shear vector points
     "shear": (5.0, 0.0),          # m/s per km
     "wind": (2.0, 0.0),           # m/s
+    "windDir": (255.0 / 360.0, 0.0),  # deg, direction the deck's mean wind blows TOWARD (shearDir's convention)
     "lapse": (20.0, 0.0),         # K/km
     "convCape": (0.25, 0.0),      # J/kg (CAPE_CON)
     "convBase": (20.0, 0.0),      # km MSL; 255 = none/missing
@@ -41,7 +48,8 @@ CLUE_LAYOUT = {
     "cruiseV": (1.0, 128.0),
 }
 MISSING = 255
-N_BYTES = 3 * len(DECK_CLUES) + len(NODE_CLUES)
+N_BYTES_V1 = 3 * len(DECK_CLUES) + len(NODE_CLUES)       # the ICX1 record: everything before the tail
+N_BYTES = N_BYTES_V1 + 3 * len(DECK_TAIL_CLUES)
 
 MOIST_RH = 90.0        # % over ice (below 0 C) or over water
 # GUESS, like DECK_BANDS_KM: the air above the layer top that capTheta/capRh
@@ -51,6 +59,7 @@ CAP_WINDOW_M = 1500.0
 SUBSTEPS = 20          # fine-grid points per pressure interval
 CRUISE_P = (200.0, 300.0)
 CRUISE_WIND_P = 250.0
+WIND_DIR_MIN_MS = 1e-9  # a vector-mean wind slower than this (m/s) has no direction: windDir is missing
 
 
 def rh_water_to_ice(rhw_pct, t_c):
@@ -91,7 +100,7 @@ def _fine(profile):
 
 
 def _nan_deck():
-    return {k: float("nan") for k in DECK_CLUES}
+    return {k: float("nan") for k in DECK_CLUES + DECK_TAIL_CLUES}
 
 
 def _deck(g, lo_km, hi_km):
@@ -167,6 +176,11 @@ def _deck(g, lo_km, hi_km):
     ws = seg[wok[seg]]
     if ws.size:
         out["wind"] = float(np.mean(np.hypot(g["u"][ws], g["v"][ws])))
+        # windDir: where the VECTOR mean wind over the same points blows toward
+        # (from north, clockwise); a calm mean has no direction.
+        mu, mv = float(np.mean(g["u"][ws])), float(np.mean(g["v"][ws]))
+        if math.hypot(mu, mv) >= WIND_DIR_MIN_MS:
+            out["windDir"] = float(math.degrees(math.atan2(mu, mv)) % 360.0)
         wz = (gh[ws[-1]] - gh[ws[0]]) / 1000.0
         if wz > 0:
             du, dv = g["u"][ws[-1]] - g["u"][ws[0]], g["v"][ws[-1]] - g["v"][ws[0]]
@@ -222,12 +236,15 @@ def encode_clues(deck, node):
     for d in DECK_NAMES:
         b += [_byte(c, deck[d][c]) for c in DECK_CLUES]
     b += [_byte(c, node[c]) for c in NODE_CLUES]
+    for d in DECK_NAMES:
+        b += [_byte(c, deck[d][c]) for c in DECK_TAIL_CLUES]
     assert len(b) == N_BYTES
     return bytes(b)
 
 
 def decode_clues(data):
-    """Inverse of encode_clues (to byte precision); 255 -> None."""
+    """Inverse of encode_clues (to byte precision); 255 -> None. A 27-byte
+    record (ICX1) has no tail: its windDir is None."""
     def one(name, byte):
         if byte == MISSING:
             return None
@@ -238,4 +255,10 @@ def decode_clues(data):
         deck[d] = {c: one(c, data[n + i]) for i, c in enumerate(DECK_CLUES)}
         n += len(DECK_CLUES)
     node = {c: one(c, data[n + i]) for i, c in enumerate(NODE_CLUES)}
+    n += len(NODE_CLUES)
+    tail = len(data) >= N_BYTES
+    for d in DECK_NAMES:
+        for c in DECK_TAIL_CLUES:
+            deck[d][c] = one(c, data[n]) if tail else None
+            n += 1
     return {"decks": deck, "node": node}

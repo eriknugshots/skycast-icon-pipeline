@@ -1,5 +1,5 @@
 name: texdev
-# The cloud-texture dev feed: upper air (ICU1) and texture clues (ICX1) for the
+# The cloud-texture dev feed: upper air (ICU1) and texture clues (ICX2) for the
 # 12 US-West squares of the newest ICON run (texdev_build.py), published under
 # texdev/ in the ICON feed's Blob store and nowhere else.
 #

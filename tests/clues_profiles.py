@@ -78,6 +78,15 @@ def clear_dry():
     return base(rh=15.0)
 
 
+def veering_wind():
+    """Wind at every level, veering with height (SW near the ground, W aloft,
+    WNW at cruise level): every deck has a mean wind and its own direction."""
+    pr = base()
+    pr["u"] = np.array([2.0, 4.0, 6.0, 9.0, 12.0, 16.0, 22.0, 30.0, 34.0, 31.0])
+    pr["v"] = np.array([5.0, 6.0, 6.0, 4.0, 2.0, -1.0, -5.0, -10.0, -13.0, -12.0])
+    return pr
+
+
 def all_synthetic():
     return {
         "thin_lid_mid": thin_lid_mid(),
@@ -86,4 +95,5 @@ def all_synthetic():
         "rh_water_to_ice": rh_water_to_ice_profile(),
         "missing_upper": missing_upper(),
         "clear_dry": clear_dry(),
+        "veering_wind": veering_wind(),
     }

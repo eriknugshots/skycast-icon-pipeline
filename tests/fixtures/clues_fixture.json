@@ -1,5 +1,5 @@
 {
- "note": "profile -> 27 clue bytes; decoded uses physical units, null = missing (255)",
+ "note": "profile -> 30 clue bytes; decoded uses physical units, null = missing (255)",
  "profiles": [
   {
    "name": "thin_lid_mid",
@@ -90,7 +90,8 @@
       "shearDir": 0.0,
       "shear": 0.0,
       "wind": 0.0,
-      "lapse": 6.5
+      "lapse": 6.5,
+      "windDir": null
      },
      "mid": {
       "depth": 520.0,
@@ -99,7 +100,8 @@
       "shearDir": 0.0,
       "shear": 0.0,
       "wind": 0.0,
-      "lapse": 5.85
+      "lapse": 5.85,
+      "windDir": null
      },
      "high": {
       "depth": 0.0,
@@ -108,7 +110,8 @@
       "shearDir": 0.0,
       "shear": 0.0,
       "wind": 0.0,
-      "lapse": 5.45
+      "lapse": 5.45,
+      "windDir": null
      }
     },
     "node": {
@@ -147,7 +150,10 @@
     255,
     67,
     128,
-    128
+    128,
+    255,
+    255,
+    255
    ]
   },
   {
@@ -239,7 +245,8 @@
       "shearDir": 0.0,
       "shear": 0.0,
       "wind": 0.0,
-      "lapse": 6.5
+      "lapse": 6.5,
+      "windDir": null
      },
      "mid": {
       "depth": 2370.0,
@@ -248,7 +255,8 @@
       "shearDir": 0.0,
       "shear": 0.0,
       "wind": 0.0,
-      "lapse": 6.5
+      "lapse": 6.5,
+      "windDir": null
      },
      "high": {
       "depth": 940.0,
@@ -257,7 +265,8 @@
       "shearDir": 0.0,
       "shear": 0.0,
       "wind": 0.0,
-      "lapse": 6.5
+      "lapse": 6.5,
+      "windDir": null
      }
     },
     "node": {
@@ -296,7 +305,10 @@
     255,
     68,
     128,
-    128
+    128,
+    255,
+    255,
+    255
    ]
   },
   {
@@ -388,7 +400,8 @@
       "shearDir": 0.0,
       "shear": 0.0,
       "wind": 0.0,
-      "lapse": 6.5
+      "lapse": 6.5,
+      "windDir": null
      },
      "mid": {
       "depth": 0.0,
@@ -397,7 +410,8 @@
       "shearDir": 0.0,
       "shear": 0.0,
       "wind": 0.0,
-      "lapse": 6.5
+      "lapse": 6.5,
+      "windDir": null
      },
      "high": {
       "depth": 0.0,
@@ -406,7 +420,8 @@
       "shearDir": 90.35294117647058,
       "shear": 7.6,
       "wind": 9.0,
-      "lapse": 5.55
+      "lapse": 5.55,
+      "windDir": 90.35294117647058
      }
     },
     "node": {
@@ -445,7 +460,10 @@
     255,
     68,
     128,
-    128
+    128,
+    255,
+    255,
+    64
    ]
   },
   {
@@ -537,7 +555,8 @@
       "shearDir": 0.0,
       "shear": 0.0,
       "wind": 0.0,
-      "lapse": 6.5
+      "lapse": 6.5,
+      "windDir": null
      },
      "mid": {
       "depth": 0.0,
@@ -546,7 +565,8 @@
       "shearDir": 0.0,
       "shear": 0.0,
       "wind": 0.0,
-      "lapse": 6.5
+      "lapse": 6.5,
+      "windDir": null
      },
      "high": {
       "depth": null,
@@ -555,7 +575,8 @@
       "shearDir": 0.0,
       "shear": 0.0,
       "wind": 0.0,
-      "lapse": 3.05
+      "lapse": 3.05,
+      "windDir": null
      }
     },
     "node": {
@@ -594,7 +615,10 @@
     255,
     201,
     128,
-    128
+    128,
+    255,
+    255,
+    255
    ]
   },
   {
@@ -686,7 +710,8 @@
       "shearDir": 0.0,
       "shear": 0.0,
       "wind": 0.0,
-      "lapse": 6.5
+      "lapse": 6.5,
+      "windDir": null
      },
      "mid": {
       "depth": null,
@@ -695,7 +720,8 @@
       "shearDir": 0.0,
       "shear": 0.0,
       "wind": 0.0,
-      "lapse": 6.5
+      "lapse": 6.5,
+      "windDir": null
      },
      "high": {
       "depth": null,
@@ -704,7 +730,8 @@
       "shearDir": null,
       "shear": null,
       "wind": null,
-      "lapse": null
+      "lapse": null,
+      "windDir": null
      }
     },
     "node": {
@@ -739,6 +766,9 @@
     255,
     255,
     0,
+    255,
+    255,
+    255,
     255,
     255,
     255,
@@ -835,7 +865,8 @@
       "shearDir": 0.0,
       "shear": 0.0,
       "wind": 0.0,
-      "lapse": 6.5
+      "lapse": 6.5,
+      "windDir": null
      },
      "mid": {
       "depth": 0.0,
@@ -844,7 +875,8 @@
       "shearDir": 0.0,
       "shear": 0.0,
       "wind": 0.0,
-      "lapse": 6.5
+      "lapse": 6.5,
+      "windDir": null
      },
      "high": {
       "depth": 0.0,
@@ -853,7 +885,8 @@
       "shearDir": 0.0,
       "shear": 0.0,
       "wind": 0.0,
-      "lapse": 5.55
+      "lapse": 5.55,
+      "windDir": null
      }
     },
     "node": {
@@ -892,7 +925,10 @@
     255,
     51,
     128,
-    128
+    128,
+    255,
+    255,
+    255
    ]
   },
   {
@@ -984,7 +1020,8 @@
       "shearDir": null,
       "shear": null,
       "wind": null,
-      "lapse": null
+      "lapse": null,
+      "windDir": null
      },
      "mid": {
       "depth": null,
@@ -993,7 +1030,8 @@
       "shearDir": 69.17647058823529,
       "shear": 8.4,
       "wind": 39.0,
-      "lapse": 6.4
+      "lapse": 6.4,
+      "windDir": 29.64705882352941
      },
      "high": {
       "depth": null,
@@ -1002,7 +1040,8 @@
       "shearDir": 48.0,
       "shear": 1.8,
       "wind": 51.0,
-      "lapse": 7.05
+      "lapse": 7.05,
+      "windDir": 32.470588235294116
      }
     },
     "node": {
@@ -1041,7 +1080,10 @@
     255,
     207,
     156,
-    178
+    178,
+    255,
+    21,
+    23
    ],
    "icon_lat_lon": [
     49.75,
@@ -1137,7 +1179,8 @@
       "shearDir": null,
       "shear": null,
       "wind": null,
-      "lapse": null
+      "lapse": null,
+      "windDir": null
      },
      "mid": {
       "depth": 0.0,
@@ -1146,7 +1189,8 @@
       "shearDir": 100.23529411764706,
       "shear": 1.0,
       "wind": 8.5,
-      "lapse": 7.3
+      "lapse": 7.3,
+      "windDir": 295.05882352941177
      },
      "high": {
       "depth": 0.0,
@@ -1155,7 +1199,8 @@
       "shearDir": 132.70588235294116,
       "shear": 4.6,
       "wind": 9.0,
-      "lapse": 6.25
+      "lapse": 6.25,
+      "windDir": 175.05882352941177
      }
     },
     "node": {
@@ -1194,11 +1239,169 @@
     255,
     53,
     134,
-    118
+    118,
+    255,
+    209,
+    124
    ],
    "icon_lat_lon": [
     36.75,
     -112.5
+   ]
+  },
+  {
+   "name": "veering_wind",
+   "profile": {
+    "p": [
+     1000.0,
+     925.0,
+     850.0,
+     700.0,
+     600.0,
+     500.0,
+     400.0,
+     300.0,
+     250.0,
+     200.0
+    ],
+    "t": [
+     14.279252,
+     10.047222,
+     5.527558,
+     -4.579163,
+     -12.341732,
+     -21.233802,
+     -31.705285,
+     -44.565655,
+     -52.359074,
+     -56.5
+    ],
+    "rh": [
+     20.0,
+     20.0,
+     20.0,
+     20.0,
+     20.0,
+     20.0,
+     20.0,
+     20.0,
+     20.0,
+     20.0
+    ],
+    "gh": [
+     110.884371,
+     761.965887,
+     1457.298704,
+     3012.178991,
+     4206.420344,
+     5574.431097,
+     7185.428528,
+     9163.946943,
+     10362.934403,
+     11784.030718
+    ],
+    "u": [
+     2.0,
+     4.0,
+     6.0,
+     9.0,
+     12.0,
+     16.0,
+     22.0,
+     30.0,
+     34.0,
+     31.0
+    ],
+    "v": [
+     5.0,
+     6.0,
+     6.0,
+     4.0,
+     2.0,
+     -1.0,
+     -5.0,
+     -10.0,
+     -13.0,
+     -12.0
+    ],
+    "cape_con": 0.0,
+    "cape_ml": 0.0,
+    "hbas_con": -500.0,
+    "htop_con": -500.0
+   },
+   "decoded": {
+    "decks": {
+     "low": {
+      "depth": 0.0,
+      "capTheta": null,
+      "capRh": null,
+      "shearDir": 96.0,
+      "shear": 2.4,
+      "wind": 7.5,
+      "lapse": 6.5,
+      "windDir": 40.94117647058823
+     },
+     "mid": {
+      "depth": 0.0,
+      "capTheta": null,
+      "capRh": null,
+      "shearDir": 124.23529411764706,
+      "shear": 3.4,
+      "wind": 13.0,
+      "lapse": 6.5,
+      "windDir": 84.70588235294117
+     },
+     "high": {
+      "depth": 0.0,
+      "capTheta": null,
+      "capRh": null,
+      "shearDir": 127.05882352941175,
+      "shear": 2.8,
+      "wind": 30.5,
+      "lapse": 5.55,
+      "windDir": 108.70588235294117
+     }
+    },
+    "node": {
+     "convCape": 0.0,
+     "convBase": null,
+     "convTop": null,
+     "cruiseRhi": 0.34,
+     "cruiseU": 34.0,
+     "cruiseV": -13.0
+    }
+   },
+   "bytes": [
+    0,
+    255,
+    255,
+    68,
+    12,
+    15,
+    130,
+    0,
+    255,
+    255,
+    88,
+    17,
+    26,
+    130,
+    0,
+    255,
+    255,
+    90,
+    14,
+    61,
+    111,
+    0,
+    255,
+    255,
+    68,
+    162,
+    115,
+    29,
+    60,
+    77
    ]
   }
  ]

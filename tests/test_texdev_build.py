@@ -86,7 +86,7 @@ def _build(tmp_path, deps, steps=(0, 1), out="out"):
 
 def test_texdev_squares_cover_the_us_and_iceland():
     names = set(texdev_build.TEXDEV_SQUARES)
-    assert len(texdev_build.TEXDEV_SQUARES) == len(names) == 206
+    assert len(texdev_build.TEXDEV_SQUARES) == len(names) == 293
     # The twelve US-West squares every test case sits in are still there.
     assert {square_name(lat, lon) for lat in (35, 40, 45) for lon in (-130, -125, -120, -115)} <= names
     # A place in each part, and the sea one square off each coast.
@@ -96,9 +96,12 @@ def test_texdev_squares_cover_the_us_and_iceland():
                      (60, -25), (65, -15),                  # Reykjavik, east Iceland
                      (35, -130), (30, -65), (55, -30)):     # Pacific, Atlantic, the sea south-west of Iceland
         assert square_name(lat, lon) in names
-    # Nothing past the dateline, nothing in the southern hemisphere, no Europe.
+    # Reykjavik's window (about 830 km each way) and Seattle's and Maine's reach these.
+    for lat, lon in ((60, -35), (65, -35), (65, -45), (60, 0), (45, -140), (45, -60), (70, -115), (75, -150)):
+        assert square_name(lat, lon) in names
+    # Nothing past the dateline, nothing in the southern hemisphere, nothing east of 5 E.
     for n in names:
-        assert n[0] == "N" and "W" in n
+        assert n[0] == "N" and ("W" in n or n.endswith("E000"))
 
 
 def test_upper_keys_follow_the_icu1_field_table():

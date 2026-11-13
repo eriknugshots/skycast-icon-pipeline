@@ -23,15 +23,18 @@ from pipeline.squares import square_name
 # and iceland for now, and then build the whole world later"), as boxes of 5°
 # squares by their SW corners, each with about one square of sea or border
 # around the land: a view from the coast looks hundreds of km out to sea, and
-# the app draws no texture where a square is missing. The Aleutians west of
+# the app draws no texture where a square is missing. The margin is about
+# 830 km each way (the app's window at Denver took 3 x 4 squares; the first
+# 206-square run left Reykjavik's window two squares short to the west:
+# a 5-degree square is only 240 km wide at 64 N). The Aleutians west of
 # 180° are left out: one square past the dateline would stretch the build's
 # single window (run_build.square_window) round the whole globe.
 #   (lat from, lat to, lon from, lon to), SW corners, inclusive
 TEXDEV_BOXES = (
-    (15, 50, -130, -65),    # the lower 48 states
-    (50, 70, -180, -130),   # Alaska
+    (15, 55, -140, -60),    # the lower 48 states
+    (45, 75, -180, -115),   # Alaska
     (10, 25, -170, -150),   # Hawaii
-    (55, 70, -30, -10),     # Iceland
+    (55, 70, -45, 0),       # Iceland
 )
 TEXDEV_SQUARES = sorted({square_name(lat, lon)
                          for la0, la1, lo0, lo1 in TEXDEV_BOXES
